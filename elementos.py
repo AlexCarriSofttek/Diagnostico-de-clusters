@@ -1,11 +1,13 @@
 import sys
 import logging
+from kubernetes.client import models
 from kubernetes import client, config
+from google.cloud.container_v1 import Cluster as Cluster_V1
 from google.cloud import container_v1 
 from google.cloud import resourcemanager_v3 as resource_manager
 
 class Project:
-    def __init__(self , project_id):
+    def __init__(self , project_id:str):
         try:
             self._raw = self.open_project(project_id)
             self.name = self._raw.display_name
@@ -56,7 +58,7 @@ class Project:
 
 # Wrapper para cluster
 class Cluster:
-    def __init__(self , cluster:container_v1.types.Cluster):
+    def __init__(self , cluster:Cluster_V1):
         self._raw = cluster 
         self.name = cluster.name
         self.location = cluster.location
@@ -75,7 +77,7 @@ class Cluster:
     def extract_namespaces(project_name:str) -> list:
         v1 = client.CoreV1Api()
         namespaces = v1.list_namespace()
-        return [Namespace(namespace) for namespace in namespaces]
+        return [Namespace(namespace) for namespace in namespaces.items]
 
     def __repr__(self):
         return (
@@ -96,22 +98,81 @@ class Cluster:
         )
 
 class Namespace:
-    def __init__(self , namespace:str):
+    def __init__(self , namespace:models.V1Namespace):
         self._raw = namespace
+        self.name = namespace.metadata.name
+        self.status = namespace.status.phase
 
-    def extract_deployments(project_name:str) -> list:
-        pass
+        try:
+            #config.load_incluster_config() # GCP
+            config.load_kube_config()
+            self.deployments = self.extract_deployments()
+            
+        except Exception as e:
+            print(f"Error al buscar deployments", file=sys.stderr)
+            logging.error(f"Error al buscar deployments. {e}")
+            sys.exit(1)
+
+    def extract_deployments(self) -> list:
+        apps_v1 = client.AppsV1Api()
+        response = apps_v1.list_namespaced_deployment(
+            namespace=self.name
+        )
+
+        return [Deployment(deployment) for deployment in response.items]
+    
+    def __repr__(self):
+        return (f"Namespace("
+                f"name='{self.name}'," 
+                f"status='{self.status} , "
+                f"deployemnts_num={len(self.deployments)}')"
+            )
+    
+    def __str__(self):
+        return (f"Nombre: {self.name}\n"
+                f"Status: {self.status}\n"
+                f"Deployments: {len(self.deployments)}")
+
 
 class Deployment:
-    def extract_pipeline(self):
+    def __init__(self , deployment:models.V1Deployment):
+        self._raw = deployment
+        self.name = deployment.metadata.name
+        
+        self.desired_replicas = deployment.spec.replicas or 0
+        self.ready_replicas = deployment.status.ready_replicas or 0
+        self.available_replicas = deployment.status.available_replicas or 0
+
+        try:
+            #config.load_incluster_config() # GCP
+            config.load_kube_config()
+            self.pods = self.extract_pods()
+            
+        except Exception as e:
+            print(f"Error al obtener pods", file=sys.stderr)
+            logging.error(f"Error al obtener pods. {e}")
+            sys.exit(1)
+
+    def get_pipeline(self):
         pass
 
-    def extract_pods(project_name:str) -> list:
-        pass
+    def extract_pods(self) -> list:
+        v1 = client.CoreV1Api()
+        dep_pods = []
+        
+        response = v1.list_namespaced_pod(
+                namespace=self.namespace
+            )
+
+        for pod in response.items:
+            if self.name in pod.metadata.name:
+                dep_pods.append(pod)
+
+        return dep_pods
 
     def set_config(self, config):
         pass
 
 class Pod:
-    def __init__(self):
+    def __init__(self , pod:models.V1Pod):
         pass
