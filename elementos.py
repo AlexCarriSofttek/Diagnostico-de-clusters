@@ -56,7 +56,6 @@ class Project:
             f"Clusters: {len(self.clusters)}"
         )
 
-# Wrapper para cluster
 class Cluster:
     def __init__(self , cluster:Cluster_V1):
         self._raw = cluster 
@@ -133,11 +132,12 @@ class Namespace:
                 f"Status: {self.status}\n"
                 f"Deployments: {len(self.deployments)}")
 
-
 class Deployment:
     def __init__(self , deployment:models.V1Deployment):
         self._raw = deployment
         self.name = deployment.metadata.name
+        self.namespace = deployment.metadata.namespace
+        self.replicas = deployment.spec.replicas or 0
         
         self.desired_replicas = deployment.spec.replicas or 0
         self.ready_replicas = deployment.status.ready_replicas or 0
@@ -153,9 +153,6 @@ class Deployment:
             logging.error(f"Error al obtener pods. {e}")
             sys.exit(1)
 
-    def get_pipeline(self):
-        pass
-
     def extract_pods(self) -> list:
         v1 = client.CoreV1Api()
         dep_pods = []
@@ -170,9 +167,66 @@ class Deployment:
 
         return dep_pods
 
-    def set_config(self, config):
-        pass
+    #def set_config(self, config): #Pendiente
+    #def get_pipeline(self): #Pendiente
+ 
+    def __repr__(self):
+        return (f"Pod("
+                f"name='{self.name}'," 
+                f"namespace='{self.namespace} , "
+                f"replicas='{self.replicas}"
+                f")"
+            )
+    
+    def __str__(self):
+        return (f"Nombre: {self.name}\n"
+                f"Namespace: {self.namespace}\n"
+                f"Replicas: {self.replicas}")
 
 class Pod:
     def __init__(self , pod:models.V1Pod):
-        pass
+        self._raw = pod
+        
+        self.name: str = pod.metadata.name
+        self.namespace: str = pod.metadata.namespace
+        self.labels: dict = pod.metadata.labels or {}
+
+        # Label común para identificar la app (si existe)
+        self.app: str | None = (
+            self.labels.get("app")
+            or self.labels.get("app.kubernetes.io/name")
+            or self.labels.get("app.kubernetes.io/instance")
+        )
+
+        # --- Spec ---
+        self.node: str | None = pod.spec.node_name
+        self.service_account: str | None = pod.spec.service_account_name
+
+        # --- Status ---
+        self.phase: str = pod.status.phase
+        self.pod_ip: str | None = pod.status.pod_ip
+        self.host_ip: str | None = pod.status.host_ip
+
+        # Reinicios totales (suma de todos los contenedores)
+        self.restart_count: int = sum(
+            cs.restart_count for cs in (pod.status.container_statuses or [])
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Pod("
+            f"name='{self.name}', "
+            f"namespace='{self.namespace}', "
+            f"phase='{self.phase}'"
+            f")"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"Pod: {self.name}\n"
+            f"  Namespace: {self.namespace}\n"
+            f"  Phase: {self.phase}\n"
+            f"  Node: {self.node}\n"
+            f"  Restarts: {self.restart_count}"
+        )
+
