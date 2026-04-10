@@ -18,7 +18,7 @@ def configurar_cliente_kubernetes():
             sys.exit(1)
 
 class Historic_Element:
-    def get_history(self , metric:str , filter:str, project:str , err_data:list, hours=0, days=0, weeks=0 , period=20):
+    def get_history(self , metric:str , filter:str, project:str , err_data:list, hours=0, days=0, weeks=0 , period=10):
         client = monitoring_v3.MetricServiceClient()
         
         end_time = datetime.now(timezone.utc)
