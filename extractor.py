@@ -3,5 +3,5 @@
 # componentes. Además de moverse entre los proyectos visibles. 
 
 class Extractor:
-    def __init__(self, depth="Deployments"):
-        
+    def __init__(self, depth="Deployments" , proyect=""):
+        pass
