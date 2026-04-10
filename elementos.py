@@ -18,7 +18,7 @@ def configurar_cliente_kubernetes():
             sys.exit(1)
 
 class Historic_Element:
-    def get_history(self , metric:str , filter:str, project:str , err_data:list, hours=0, days=0, weeks=0 ):
+    def get_history(self , metric:str , filter:str, project:str , err_data:list, hours=0, days=0, weeks=0 , period=20):
         client = monitoring_v3.MetricServiceClient()
         
         end_time = datetime.now(timezone.utc)
@@ -32,7 +32,7 @@ class Historic_Element:
         alineador = monitoring_v3.Aggregation.Aligner.ALIGN_RATE if "cpu" in metric else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
 
         agregacion = monitoring_v3.Aggregation(
-            alignment_period={"seconds": 20},
+            alignment_period={"seconds": period},
             per_series_aligner=alineador,
             cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX
         ) 
@@ -55,7 +55,7 @@ class Historic_Element:
                 file=sys.stderr
                 )
             logging.error(f"Error al metricas en {'/'.join(err_data)}. {e}")
-        return resultados 
+        return resultados
 
 class Project:
     def __init__(self , project_id:str):
@@ -225,7 +225,7 @@ class Deployment(Historic_Element):
 
         return dep_pods
     
-    def get_history(self , metrics:list[str] , hours=0, days=0, weeks=0):
+    def get_history(self , metrics:list[str], period=10 , hours=0, days=0, weeks=0):
         for metric in metrics:
             for container in self._raw.spec.template.spec.containers:
                 filtro = (
@@ -235,11 +235,13 @@ class Deployment(Historic_Element):
                     f'AND resource.labels.container_name = "{container.name}"'
                 )
 
-            results = super().get_history(metric=metric, filter=filtro , 
+            results , period = super().get_history(metric=metric, filter=filtro, 
                                 project=f"projects/{self.project_ID}",
-                                err_data=[self.namespace,container.name],hours=hours, days=days, weeks=weeks)
+                                err_data=[self.namespace,container.name],
+                                hours=hours, days=days, weeks=weeks, 
+                                period= period)
 
-            return results
+            return results , period
     
     #def set_config(self, config): #Pendiente
     #def get_pipeline(self): #Pendiente
