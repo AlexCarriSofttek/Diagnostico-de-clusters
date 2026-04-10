@@ -239,7 +239,7 @@ class Deployment(Historic_Element):
                                 project=f"projects/{self.project_ID}",
                                 err_data=[self.namespace,container.name],hours=hours, days=days, weeks=weeks)
 
-            return results  
+            return results
     
     #def set_config(self, config): #Pendiente
     #def get_pipeline(self): #Pendiente
