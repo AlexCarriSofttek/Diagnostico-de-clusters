@@ -55,10 +55,10 @@ class Historic_Element:
                 file=sys.stderr
                 )
             logging.error(f"Error al metricas en {'/'.join(err_data)}. {e}")
-        return resultados
+        return resultados , period
 
 class Project:
-    def __init__(self , project_id:str):
+    def __init__(self , project_id:str , get_clusters=False):
         configurar_cliente_kubernetes()
         try:
             self._raw = self.open_project(project_id)
@@ -70,18 +70,22 @@ class Project:
             logging.error(f"Error al abrir project: {project_id}. {e}")
             sys.exit(1)
 
-        try:
-            self.clusters = self.extract_clusters(project_id)
-            
-        except Exception as e:
-            print(f"Error al buscar clusters", file=sys.stderr)
-            logging.error(f"Error al buscar clusters. {e}")
-            sys.exit(1)
+        if get_clusters: self.obtain_clusters()
+        else: self.clusters = None
 
     def open_project(self , project_id):
         client = resource_manager.ProjectsClient()
         project = client.get_project(name=f"projects/{project_id}")
         return project
+
+    def obtain_clusters(self):
+        try:
+            self.clusters = self.extract_clusters(self.ID)
+            
+        except Exception as e:
+            print(f"Error al buscar clusters", file=sys.stderr)
+            logging.error(f"Error al buscar clusters. {e}")
+            sys.exit(1)
 
     def extract_clusters(self , project_id:str) -> list:
         client = container_v1.ClusterManagerClient()
@@ -96,7 +100,7 @@ class Project:
             f"project_id='{self._raw.project_id}', "
             f"display_name='{self._raw.display_name}', "
             f"state='{self._raw.state.name}', "
-            f"clusters={len(self.clusters)}"
+            f"clusters={len(self.clusters)}" if self.self.clusters else ""
             f")"
         )
     
@@ -105,20 +109,22 @@ class Project:
             f"Proyecto: {self._raw.display_name}\n"
             f"ID: {self._raw.project_id}\n"
             f"Estado: {self._raw.state.name}\n"
-            f"Clusters: {len(self.clusters)}"
+            f"Clusters: {len(self.clusters)}" if self.clusters else ""
         )
 
 class Cluster:
-    def __init__(self , cluster:Cluster_V1 , project_ID:str):
+    def __init__(self , cluster:Cluster_V1 , project_ID:str, get_namespaces=False):
         self._raw = cluster 
         self.name = cluster.name
         self.location = cluster.location
         self.status = cluster.status.name
         self.project_ID = project_ID
 
+        if get_namespaces: self.obtain_namespaces()
+        else: self.namespaces = None
+
+    def obtain_namespaces(self):
         try:
-            #config.load_incluster_config() # GCP
-            #config.load_kube_config()
             self.namespaces = self.extract_namespaces()
             
         except Exception as e:
@@ -137,7 +143,7 @@ class Cluster:
             f"cluster_name='{self.name}', "
             f"location='{self.location}', "
             f"status='{self.status}', "
-            f"namespaces={len(self.namespaces)}"
+            f"namespaces={len(self.namespaces)}" if self.namespaces else""
             f")"
         )
     
@@ -146,20 +152,22 @@ class Cluster:
             f"Cluster: {self.name}\n"
             f"Ubicacion: {self.location}\n"
             f"Estatus: {self.status}\n"
-            f"Namespaces: {len(self.namespaces)}"
+            f"Namespaces: {len(self.namespaces)}" if self.namespaces else""
         )
 
 class Namespace:
-    def __init__(self , namespace:models.V1Namespace , project_ID:str , cluster_name:str):
+    def __init__(self , namespace:models.V1Namespace , project_ID:str , cluster_name:str , get_deployments=False):
         self._raw = namespace
         self.name = namespace.metadata.name
         self.status = namespace.status.phase
         self.project_ID = project_ID
         self.cluster_name = cluster_name
 
+        if get_deployments:self.obtain_deployments()
+        else: self.deployments = None
+
+    def obtain_deployments(self):
         try:
-            #config.load_incluster_config() # GCP
-            #config.load_kube_config()
             self.deployments = self.extract_deployments()
             
         except Exception as e:
@@ -179,16 +187,17 @@ class Namespace:
         return (f"Namespace("
                 f"name='{self.name}'," 
                 f"status='{self.status} , "
-                f"deployemnts_num={len(self.deployments)}')"
+                f"deployemnts_num={len(self.deployments)}')" if self.self.deployments else ""
             )
     
     def __str__(self):
         return (f"Nombre: {self.name}\n"
                 f"Status: {self.status}\n"
-                f"Deployments: {len(self.deployments)}")
+                f"Deployments: {len(self.deployments)}" if self.self.deployments else ""
+                )
 
 class Deployment(Historic_Element):
-    def __init__(self , deployment:models.V1Deployment , project_ID:str , cluster_name:str):
+    def __init__(self , deployment:models.V1Deployment , project_ID:str , cluster_name:str , get_pods=False):
         self._raw = deployment
         self.name = deployment.metadata.name
         self.namespace = deployment.metadata.namespace
@@ -201,9 +210,11 @@ class Deployment(Historic_Element):
         self.ready_replicas = deployment.status.ready_replicas or 0
         self.available_replicas = deployment.status.available_replicas or 0
 
+        if get_pods: self.obtain_pods()
+        else: self.pods = None
+
+    def obtain_pods(self):
         try:
-            #config.load_incluster_config() # GCP
-            #config.load_kube_config()
             self.pods = self.extract_pods()
             
         except Exception as e:
@@ -226,6 +237,7 @@ class Deployment(Historic_Element):
         return dep_pods
     
     def get_history(self , metrics:list[str], period=10 , hours=0, days=0, weeks=0):
+        results = []
         for metric in metrics:
             for container in self._raw.spec.template.spec.containers:
                 filtro = (
@@ -235,19 +247,20 @@ class Deployment(Historic_Element):
                     f'AND resource.labels.container_name = "{container.name}"'
                 )
 
-            results , period = super().get_history(metric=metric, filter=filtro, 
+                result , period = super().get_history(metric=metric, filter=filtro, 
                                 project=f"projects/{self.project_ID}",
                                 err_data=[self.namespace,container.name],
                                 hours=hours, days=days, weeks=weeks, 
                                 period= period)
 
-            return results , period
+                results.append([metric , container.name ,result , period]) 
+        return results
     
     #def set_config(self, config): #Pendiente
     #def get_pipeline(self): #Pendiente
  
     def __repr__(self):
-        return (f"Pod("
+        return (f"Deployment("
                 f"name='{self.name}'," 
                 f"namespace='{self.namespace} , "
                 f"replicas='{self.replicas}"
@@ -305,4 +318,3 @@ class Pod:
             f"  Node: {self.node}\n"
             f"  Restarts: {self.restart_count}"
         )
-
