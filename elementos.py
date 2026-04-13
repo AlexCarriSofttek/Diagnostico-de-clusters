@@ -1,4 +1,3 @@
-import sys
 import logging
 from kubernetes.client import models
 from kubernetes import client, config
@@ -11,96 +10,101 @@ def configurar_cliente_kubernetes():
     try:
         config.load_incluster_config()
     except config.ConfigException:
-        try:
-            config.load_kube_config()
-        except config.ConfigException as e:
-            print(f"Error al configurar el cliente de Kubernetes: {e}", file=sys.stderr)
-            sys.exit(1)
+        config.load_kube_config()
 
-class Historic_Element:
-    def get_history(self , metric:str , filter:str, project:str , err_data:list, hours=0, days=0, weeks=0 , period=10):
-        client = monitoring_v3.MetricServiceClient()
-        
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=hours,days=days, weeks=weeks)
+class Clients:
+    _core_v1 = None
+    _apps_v1 = None
+    _monitoring = None
 
-        interval = monitoring_v3.TimeInterval({
-        "end_time": {"seconds": int(end_time.timestamp())},
-        "start_time": {"seconds": int(start_time.timestamp())}
-        })
+    @classmethod
+    def core_v1(cls):
+        if cls._core_v1 is None:
+            cls._core_v1 = client.CoreV1Api()
+        return cls._core_v1
 
-        alineador = monitoring_v3.Aggregation.Aligner.ALIGN_RATE if "cpu" in metric else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
+    @classmethod
+    def apps_v1(cls):
+        if cls._apps_v1 is None:
+            cls._apps_v1 = client.AppsV1Api()
+        return cls._apps_v1
 
-        agregacion = monitoring_v3.Aggregation(
+    @classmethod
+    def monitoring(cls):
+        if cls._monitoring is None:
+            cls._monitoring = monitoring_v3.MetricServiceClient()
+        return cls._monitoring
+
+class HistoricElement:
+    def get_history(self, metric: str, filter: str,
+                    project: str, err_data: list, *,
+                    hours=0, days=0, weeks=0, period=10,):
+        client = Clients.monitoring()
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours, days=days, weeks=weeks)
+
+        interval = monitoring_v3.TimeInterval(
+            start_time={"seconds": int(start.timestamp())},
+            end_time={"seconds": int(end.timestamp())},
+        )
+
+        aligner = (
+            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
+            if "cpu" in metric
+            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
+        )
+
+        aggregation = monitoring_v3.Aggregation(
             alignment_period={"seconds": period},
-            per_series_aligner=alineador,
-            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX
-        ) 
+            per_series_aligner=aligner,
+            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX,
+        )
 
-        peticion = {
+        request = {
             "name": project,
             "filter": filter,
             "interval": interval,
-            "aggregation": agregacion,
-            "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+            "aggregation": aggregation,
         }
 
-        resultados = []
+        values = []
+
         try:
-            for serie in client.list_time_series(request=peticion):
-                for punto in serie.points:
-                    resultados.append(punto.value.double_value)
-        except Exception as e:
-            print(f"Error obteniendo metricas para {'/'.join(err_data)}: {str(e)[:3]}", 
-                file=sys.stderr
-                )
-            logging.error(f"Error al metricas en {'/'.join(err_data)}. {e}")
-        return resultados , period
+            for serie in client.list_time_series(request=request):
+                values.extend(p.value.double_value for p in serie.points)
+        except Exception:
+            logging.exception(f"Metrics error: {'/'.join(err_data)}")
+
+        return values, period
 
 class Project:
-    def __init__(self , project_id:str , get_clusters=False):
+    def __init__(self, project_id: str):
         configurar_cliente_kubernetes()
-        try:
-            self._raw = self.open_project(project_id)
-            self.name = self._raw.display_name
-            self.ID = self._raw.project_id
-            
-        except Exception as e:
-            print(f"Error al abrir project: {project_id}", file=sys.stderr)
-            logging.error(f"Error al abrir project: {project_id}. {e}")
-            sys.exit(1)
+        self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
+        self.id = self._raw.project_id
+        self.name = self._raw.display_name
+        self.clusters: list[Cluster] | None = None
 
-        if get_clusters: self.obtain_clusters()
-        else: self.clusters = None
+    def load_clusters(self):
+        if self.clusters is not None:
+            return
 
-    def open_project(self , project_id):
-        client = resource_manager.ProjectsClient()
-        project = client.get_project(name=f"projects/{project_id}")
-        return project
-
-    def obtain_clusters(self):
-        try:
-            self.clusters = self.extract_clusters(self.ID)
-            
-        except Exception as e:
-            print(f"Error al buscar clusters", file=sys.stderr)
-            logging.error(f"Error al buscar clusters. {e}")
-            sys.exit(1)
-
-    def extract_clusters(self , project_id:str) -> list:
         client = container_v1.ClusterManagerClient()
         response = client.list_clusters(
-            parent=f"projects/{project_id}/locations/-"
+            parent=f"projects/{self.id}/locations/-"
         )
-        return [Cluster(cluster , self._raw.project_id) for cluster in response.clusters]
+        self.clusters = [
+            Cluster(c, self.id) for c in response.clusters
+        ]
     
     def __repr__(self):
         return (
             f"Project("
             f"project_id='{self._raw.project_id}', "
             f"display_name='{self._raw.display_name}', "
-            f"state='{self._raw.state.name}', "
-            f"clusters={len(self.clusters)}" if self.self.clusters else ""
+            f"state='{self._raw.state.name}'"
+            f"{f", clusters={len(self.clusters)}" if self.clusters else ""}"
             f")"
         )
     
@@ -109,41 +113,36 @@ class Project:
             f"Proyecto: {self._raw.display_name}\n"
             f"ID: {self._raw.project_id}\n"
             f"Estado: {self._raw.state.name}\n"
-            f"Clusters: {len(self.clusters)}" if self.clusters else ""
+            f"{f"Clusters: {len(self.clusters)}" if self.clusters else ""}"
         )
 
 class Cluster:
-    def __init__(self , cluster:Cluster_V1 , project_ID:str, get_namespaces=False):
-        self._raw = cluster 
-        self.name = cluster.name
-        self.location = cluster.location
-        self.status = cluster.status.name
-        self.project_ID = project_ID
+    def __init__(self, raw:Cluster_V1, project_id: str):
+        self._raw = raw
+        self.name = raw.name
+        self.location = raw.location
+        self.status = raw.status.name
+        self.project_id = project_id
+        self.namespaces: list[Namespace] | None = None
 
-        if get_namespaces: self.obtain_namespaces()
-        else: self.namespaces = None
+    def load_namespaces(self):
+        if self.namespaces is not None:
+            return
 
-    def obtain_namespaces(self):
-        try:
-            self.namespaces = self.extract_namespaces()
-            
-        except Exception as e:
-            print(f"Error al buscar namespaces", file=sys.stderr)
-            logging.error(f"Error al buscar namespaces. {e}")
-            sys.exit(1)
-
-    def extract_namespaces(self) -> list:
-        v1 = client.CoreV1Api()
-        namespaces = v1.list_namespace()
-        return [Namespace(namespace , self.project_ID , self.name) for namespace in namespaces.items]
+        v1 = Clients.core_v1()
+        response = v1.list_namespace()
+        self.namespaces = [
+            Namespace(ns, self.project_id, self.name)
+            for ns in response.items
+        ]
 
     def __repr__(self):
         return (
             f"Cluster("
             f"cluster_name='{self.name}', "
             f"location='{self.location}', "
-            f"status='{self.status}', "
-            f"namespaces={len(self.namespaces)}" if self.namespaces else""
+            f"status='{self.status}"
+            f"{f", namespaces={len(self.namespaces)}" if self.namespaces else""}"
             f")"
         )
     
@@ -152,92 +151,59 @@ class Cluster:
             f"Cluster: {self.name}\n"
             f"Ubicacion: {self.location}\n"
             f"Estatus: {self.status}\n"
-            f"Namespaces: {len(self.namespaces)}" if self.namespaces else""
+            f"{f"Namespaces: {len(self.namespaces)}" if self.namespaces else""}"
         )
 
 class Namespace:
-    def __init__(self , namespace:models.V1Namespace , project_ID:str , cluster_name:str , get_deployments=False):
-        self._raw = namespace
-        self.name = namespace.metadata.name
-        self.status = namespace.status.phase
-        self.project_ID = project_ID
+    def __init__(self, raw: models.V1Namespace, project_id, cluster_name):
+        self._raw = raw
+        self.name = raw.metadata.name
+        self.status = raw.status.phase
+        self.project_id = project_id
         self.cluster_name = cluster_name
+        self.deployments: list[Deployment] | None = None
 
-        if get_deployments:self.obtain_deployments()
-        else: self.deployments = None
+    def load_deployments(self):
+        if self.deployments is not None:
+            return
 
-    def obtain_deployments(self):
-        try:
-            self.deployments = self.extract_deployments()
-            
-        except Exception as e:
-            print(f"Error al buscar deployments", file=sys.stderr)
-            logging.error(f"Error al buscar deployments. {e}")
-            sys.exit(1)
+        apps = Clients.apps_v1()
+        response = apps.list_namespaced_deployment(namespace=self.name)
+        self.deployments = [
+            Deployment(d, self.project_id, self.cluster_name)
+            for d in response.items
+        ]
 
-    def extract_deployments(self) -> list:
-        apps_v1 = client.AppsV1Api()
-        response = apps_v1.list_namespaced_deployment(
-            namespace=self.name
-        )
-
-        return [Deployment(deployment , self.project_ID , self.cluster_name) for deployment in response.items]
-    
     def __repr__(self):
         return (f"Namespace("
                 f"name='{self.name}'," 
-                f"status='{self.status} , "
-                f"deployemnts_num={len(self.deployments)}')" if self.self.deployments else ""
+                f"status='{self.status}'"
+                f"{f" , deployemnts_num='{len(self.deployments)}'" if self.deployments else ""}"
+                f")"
             )
     
     def __str__(self):
         return (f"Nombre: {self.name}\n"
                 f"Status: {self.status}\n"
-                f"Deployments: {len(self.deployments)}" if self.self.deployments else ""
+                f"{f"Deployments: {len(self.deployments)}" if self.deployments else ""}"
                 )
 
-class Deployment(Historic_Element):
-    def __init__(self , deployment:models.V1Deployment , project_ID:str , cluster_name:str , get_pods=False):
-        self._raw = deployment
-        self.name = deployment.metadata.name
-        self.namespace = deployment.metadata.namespace
-        self.replicas = deployment.spec.replicas or 0
-
-        self.project_ID = project_ID
+class Deployment(HistoricElement):
+    def __init__(self, raw: models.V1Deployment, project_id, cluster_name):
+        self._raw = raw
+        self.name = raw.metadata.name
+        self.namespace = raw.metadata.namespace
+        self.project_id = project_id
         self.cluster_name = cluster_name
-        
-        self.desired_replicas = deployment.spec.replicas or 0
-        self.ready_replicas = deployment.status.ready_replicas or 0
-        self.available_replicas = deployment.status.available_replicas or 0
+        self.replicas = raw.spec.replicas or 0
 
-        if get_pods: self.obtain_pods()
-        else: self.pods = None
+        self.desired_replicas = raw.spec.replicas or 0
+        self.ready_replicas = raw.status.ready_replicas or 0
+        self.available_replicas = raw.status.available_replicas or 0
 
-    def obtain_pods(self):
-        try:
-            self.pods = self.extract_pods()
-            
-        except Exception as e:
-            print(f"Error al obtener pods", file=sys.stderr)
-            logging.error(f"Error al obtener pods. {e}")
-            sys.exit(1)
-
-    def extract_pods(self) -> list:
-        v1 = client.CoreV1Api()
-        dep_pods = []
-        
-        response = v1.list_namespaced_pod(
-                namespace=self.namespace
-            )
-
-        for pod in response.items:
-            if self.name in pod.metadata.name:
-                dep_pods.append(pod)
-
-        return dep_pods
-    
-    def get_history(self , metrics:list[str], period=10 , hours=0, days=0, weeks=0):
+    def get_history(self, metrics: list[str], **kwargs):
         results = []
+
         for metric in metrics:
             for container in self._raw.spec.template.spec.containers:
                 filtro = (
@@ -247,18 +213,18 @@ class Deployment(Historic_Element):
                     f'AND resource.labels.container_name = "{container.name}"'
                 )
 
-                result , period = super().get_history(metric=metric, filter=filtro, 
-                                project=f"projects/{self.project_ID}",
-                                err_data=[self.namespace,container.name],
-                                hours=hours, days=days, weeks=weeks, 
-                                period= period)
+                values, period = super().get_history(
+                    metric=metric,
+                    filter=filtro,
+                    project=f"projects/{self.project_id}",
+                    err_data=[self.namespace, container.name],
+                    **kwargs,
+                )
 
-                results.append([metric , container.name ,result , period]) 
+                results.append((metric, container.name, values, period))
+
         return results
-    
-    #def set_config(self, config): #Pendiente
-    #def get_pipeline(self): #Pendiente
- 
+
     def __repr__(self):
         return (f"Deployment("
                 f"name='{self.name}'," 
