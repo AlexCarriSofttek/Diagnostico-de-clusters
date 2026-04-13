@@ -3,7 +3,7 @@
 # componentes. Además de moverse entre los proyectos visibles. 
 import elementos as e
 
-class ProjectExplorer:
+class Explorador:
     def __init__(self, project_id: str):
         self.project = e.Project(project_id)
 
