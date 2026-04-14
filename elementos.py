@@ -5,6 +5,8 @@ from datetime import datetime, timezone, timedelta
 from google.cloud.container_v1 import Cluster as Cluster_V1
 from google.cloud import container_v1 , monitoring_v3
 from google.cloud import resourcemanager_v3 as resource_manager
+from dataclasses import dataclass
+from typing import List
 
 def configurar_cliente_kubernetes():
     try:
@@ -202,7 +204,14 @@ class Deployment(HistoricElement):
         self.available_replicas = raw.status.available_replicas or 0
 
     def get_history(self, metrics: list[str], **kwargs):
-        results = []
+        @dataclass(frozen=True)
+        class MetricHistory:
+            deployment: str
+            metric: str
+            container: str
+            values: List[float]
+            period: int
+            results = []
 
         for metric in metrics:
             for container in self._raw.spec.template.spec.containers:
@@ -221,9 +230,30 @@ class Deployment(HistoricElement):
                     **kwargs,
                 )
 
-                results.append((metric, container.name, values, period))
+                yield MetricHistory(
+                                deployment=self.name,
+                                metric=metric,
+                                container=container.name,
+                                values=values,
+                                period=period,
+                            )
 
-        return results
+    def iter_current_lr(self):
+        @dataclass(frozen=True)
+        class CurrentResources:
+            deployment: str
+            container: str
+            limits: dict
+            requests: dict
+
+        for container in self._raw.spec.template.spec.containers:
+            resources = container.resources
+            yield CurrentResources(
+                self.name,
+                container.name,
+                resources.limits,
+                resources.requests,
+            )
 
     def __repr__(self):
         return (f"Deployment("

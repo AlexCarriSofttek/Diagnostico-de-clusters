@@ -1,11 +1,11 @@
 # Este script es responsabe de invocar los metodos de los 
 # elementos para dar como resultado los proyectos con sus 
 # componentes. Además de moverse entre los proyectos visibles. 
-import elementos as e
+from elementos import Project
 
 class Explorador:
     def __init__(self, project_id: str):
-        self.project = e.Project(project_id)
+        self.project = Project(project_id)
 
     def iter_clusters(self):
         self.project.load_clusters()
