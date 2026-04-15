@@ -203,7 +203,7 @@ class Deployment(HistoricElement):
         self.ready_replicas = raw.status.ready_replicas or 0
         self.available_replicas = raw.status.available_replicas or 0
 
-    def get_history(self, metrics: list[str], **kwargs):
+    def iter_history(self, metrics: list[str], **kwargs):
         @dataclass(frozen=True)
         class MetricHistory:
             deployment: str

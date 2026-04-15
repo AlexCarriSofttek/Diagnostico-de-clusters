@@ -21,6 +21,12 @@ class Explorador:
             namespace.load_deployments()
             yield from namespace.deployments
 
+    def iter_deployments_filter(self , filters):
+        for namespace in self.iter_namespaces():
+            if not any(exc in namespace.name for exc in filters):
+                namespace.load_deployments()
+                yield from namespace.deployments
+
 # if __name__ == "__main__":
 #     explorer = ProjectExplorer("cpl-ssff-adqbbva-qa-13052025")
 
