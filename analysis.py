@@ -14,7 +14,7 @@ class Analisys:
     def __init__(self , project_id: str):
         self.explorer = Explorador(project_id=project_id)
 
-    def limits_requests(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
+    def limits_requests_suggestions(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
         df = self.get_resources_res(metrics=metrics , hours=hours , days=days , weeks=weeks)
         
         df["static_cpu"] = df["static_cpu"].apply(cpu2millicores)

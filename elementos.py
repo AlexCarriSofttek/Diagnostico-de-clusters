@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from google.cloud.container_v1 import Cluster as Cluster_V1
 from google.cloud import container_v1 , monitoring_v3
 from google.cloud import resourcemanager_v3 as resource_manager
+from google.api_core.exceptions import InvalidArgument
 from dataclasses import dataclass
 from typing import List
 
@@ -212,10 +213,26 @@ class Deployment(HistoricElement):
             body=patch_body
         )
     
-    def get_memory_hist(self , days:int , rate:str):
+    def get_memory_hist(self , days:int , rate="1m"):
+        
+        """
+        Obtiene el historial de memoria.
+        rate soporta h (horas), m (minutos) , s(segundos)
+        tamaño_del_rango / periodo <= 100,000. Ej 30 dias / 30s =  2592000/30 = 84,400 
+
+        Regresa un data frame de pandas acomodado
+
+        Parameters
+        ----------
+        days : int
+            Número de días a consultar. Debe ser mayor a 0.
+        rate : str
+            Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
+        """
+
         from pandas import DataFrame , to_datetime
         client = monitoring_v3.QueryServiceClient()
-
+        # Configutacion recomendad para 30 días 30s 
         query = f"""
         fetch k8s_container
         | metric 'kubernetes.io/container/memory/used_bytes'
@@ -226,9 +243,11 @@ class Deployment(HistoricElement):
             && metadata.system_labels.top_level_controller_name == '{self.name}'
             && metadata.system_labels.top_level_controller_type == 'Deployment'
             && metric.memory_type == 'non-evictable'
-        | group_by 1m, [value_used_bytes_mean: mean(value.used_bytes)]
-        | every 1m
+        | group_by {rate}, [value_used_bytes_mean: mean(value.used_bytes)]
+        | every {rate}
         | within {days}d
+        | group_by [],
+            [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
         """
 
         request = monitoring_v3.QueryTimeSeriesRequest(
@@ -236,24 +255,101 @@ class Deployment(HistoricElement):
             query=query,
         )
 
-        pager = client.query_time_series(request=request)
-        rows = []
-        for series in pager:
-            for points in series.point_data:
-                rows.append({
-                    "time" : points.time_interval.end_time,
-                    "bytes" : points.values[0].double_value
-                })
+        try:
+            pager = client.query_time_series(request=request)
+            rows = []
+            for series in pager:
+                for points in series.point_data:
+                    rows.append({
+                        "time" : points.time_interval.end_time,
+                        "bytes" : points.values[0].double_value
+                    })
 
-        df = DataFrame(rows)
+            df = DataFrame(rows)
+            
+            df["time"] = to_datetime(df["time"])
+
+            df.set_index("time", inplace=True)
+            df.sort_index(ascending=True, inplace=True)
+
+            df["time_delta_seconds"] = (
+                df.index - df.index[0]
+            ).total_seconds()
+
+            return df 
         
-        df["time"] = to_datetime(df["time"])
+        except InvalidArgument as e:
+            print("Escediste el numero de muestras")
+            print("Revisa que no excedan 100,000")
+            return None     
 
-        df.set_index("time", inplace=True)
-        df.sort_index(ascending=False, inplace=True)
+    def get_cpu_hist(self , days:int , rate="1m"):
+        """
+        Obtiene el historial de cpu.
+        rate soporta h (horas), m (minutos) , s(segundos)
+        tamaño_del_rango / periodo <= 100,000. Ej 30 dias / 30s =  2592000/30 = 84,400 
 
-        return rows
+        Regresa un data frame de pandas acomodado
 
+        Parameters
+        ----------
+        days : int
+            Número de días a consultar. Debe ser mayor a 0.
+        rate : str
+            Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
+        """
+
+        from pandas import DataFrame , to_datetime
+        client = monitoring_v3.QueryServiceClient()
+
+        query = f"""
+        fetch k8s_container
+        | metric 'kubernetes.io/container/cpu/core_usage_time'
+        | filter
+            resource.cluster_name == '{self.cluster_name}'
+            && resource.location == '{self.location}'
+            && resource.namespace_name == '{self.namespace}'
+            && metadata.system_labels.top_level_controller_name == '{self.name}'
+            && metadata.system_labels.top_level_controller_type == 'Deployment'
+        | align rate(1m)
+        | every {rate}
+        | within {days}d
+        | group_by [],
+            [value_core_usage_time_aggregate: aggregate(value.core_usage_time)]
+        """
+
+        request = monitoring_v3.QueryTimeSeriesRequest(
+            name=f"projects/{self.project_id}",
+            query=query,
+        )
+
+        try:
+            pager = client.query_time_series(request=request)
+            rows = []
+            for series in pager:
+                for points in series.point_data:
+                    rows.append({
+                        "time" : points.time_interval.end_time,
+                        "cores" : points.values[0].double_value
+                    })
+
+            df = DataFrame(rows)
+            
+            df["time"] = to_datetime(df["time"])
+
+            df.set_index("time", inplace=True)
+            df.sort_index(ascending=True, inplace=True)
+            
+            df["time_delta_seconds"] = (
+                df.index - df.index[0]
+            ).total_seconds()
+
+            return df 
+        
+        except InvalidArgument as e:
+            print("Escediste el numero de muestras")
+            print("Revisa que no excedan 100,000")
+            return None     
 
     def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
