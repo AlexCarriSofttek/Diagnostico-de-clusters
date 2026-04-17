@@ -1,8 +1,8 @@
 from explorador import Explorador
 from collections import Counter
 from typing import List
+from converters import bytes2mi , cpu2millicores
 import pandas as pd
-import json
 
 # Nota: 7 días de datos es pesado pero deberia de cubrir la
 # mayoria de los casos
@@ -15,9 +15,36 @@ class Analisys:
         self.explorer = Explorador(project_id=project_id)
 
     def limits_requests(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
-        pass
+        df = self.get_resources_res(metrics=metrics , hours=hours , days=days , weeks=weeks)
+        
+        df["static_cpu"] = df["static_cpu"].apply(cpu2millicores)
+        df["static_memory"] = df["static_memory"].apply(bytes2mi)
 
-    def get_resources_history(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
+        df["recommended_cpu_request"] = (df["static_cpu"] * 1.35).round(0)
+        df["recommended_cpu_limit"]   = (df["static_cpu"] * 2).round(0)
+
+        df["recommended_mem_request"] = (df["static_memory"] * 1.35).round(0)
+        df["recommended_mem_limit"]   = (df["static_memory"] * 2).round(0)
+
+        df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(
+            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(
+            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_mem_request"] = df["recommended_mem_request"].apply(
+            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_mem_limit"] = df["recommended_mem_limit"].apply(
+            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
+        )
+
+        return df
+
+    def get_resources_res(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
         dfs = []
         for deployment in self.explorer.iter_deployments():
             df_resources = pd.DataFrame([
@@ -68,8 +95,8 @@ class Analisys:
                     values="Stat value",
                     aggfunc="first"
                 )
-                .reset_index().rename(columns={"kubernetes.io/container/cpu/core_usage_time": "cpu_stat",
-                                        "kubernetes.io/container/memory/used_bytes": "memory_stat"})
+                .reset_index().rename(columns={"kubernetes.io/container/cpu/core_usage_time": "static_cpu",
+                                        "kubernetes.io/container/memory/used_bytes": "static_memory"})
             )
 
             dfs.append(pd.merge(
@@ -82,6 +109,7 @@ class Analisys:
         return pd.concat(dfs , ignore_index=True)
     
     def export_metrics_json(self, metrics: List[str], hours=0, days=0, weeks=0):
+        import json
         metrics_json = []
 
         for deployment in self.explorer.iter_deployments():
@@ -125,5 +153,5 @@ class Analisys:
 if __name__ == "__main__":
     METRICS = ["kubernetes.io/container/memory/used_bytes" , "kubernetes.io/container/cpu/core_usage_time"]
 
-    a = Analisys("cpl-ssff-adqbbva-qa-13052025").get_resources_history(metrics=METRICS , hours=1)
+    a = Analisys("cpl-ssff-adqbbva-qa-13052025").get_resources_res(metrics=METRICS , hours=1)
     print(a)

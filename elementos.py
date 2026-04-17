@@ -134,7 +134,7 @@ class Cluster:
         v1 = Clients.core_v1()
         response = v1.list_namespace()
         self.namespaces = [
-            Namespace(ns, self.project_id, self.name)
+            Namespace(ns, self.project_id, self.name , self.location)
             for ns in response.items
         ]
 
@@ -157,12 +157,13 @@ class Cluster:
         )
 
 class Namespace:
-    def __init__(self, raw: models.V1Namespace, project_id, cluster_name):
+    def __init__(self, raw: models.V1Namespace, project_id, cluster_name , location):
         self._raw = raw
         self.name = raw.metadata.name
         self.status = raw.status.phase
         self.project_id = project_id
         self.cluster_name = cluster_name
+        self.location = location
         self.deployments: list[Deployment] | None = None
 
     def load_deployments(self):
@@ -172,7 +173,7 @@ class Namespace:
         apps = Clients.apps_v1()
         response = apps.list_namespaced_deployment(namespace=self.name)
         self.deployments = [
-            Deployment(d, self.project_id, self.cluster_name)
+            Deployment(d, self.project_id, self.cluster_name , self.location)
             for d in response.items
         ]
 
@@ -191,19 +192,75 @@ class Namespace:
                 )
 
 class Deployment(HistoricElement):
-    def __init__(self, raw: models.V1Deployment, project_id, cluster_name):
-        self._raw = raw
-        self.name = raw.metadata.name
-        self.namespace = raw.metadata.namespace
-        self.project_id = project_id
-        self.cluster_name = cluster_name
-        self.replicas = raw.spec.replicas or 0
+    def __init__(self, raw: models.V1Deployment, project_id, cluster_name , location):
+        self._raw:models.V1Deployment = raw
+        self.name:str = raw.metadata.name
+        self.namespace:str = raw.metadata.namespace
+        self.project_id:str = project_id
+        self.cluster_name:str = cluster_name
+        self.location:str = location
+        self.replicas:int = raw.spec.replicas or 0
 
-        self.desired_replicas = raw.spec.replicas or 0
-        self.ready_replicas = raw.status.ready_replicas or 0
-        self.available_replicas = raw.status.available_replicas or 0
+        self.desired_replicas:int = raw.spec.replicas or 0
+        self.ready_replicas:int = raw.status.ready_replicas or 0
+        self.available_replicas:int = raw.status.available_replicas or 0
 
-    def iter_history(self, metrics: list[str], **kwargs):
+    def patch_deployment(self , patch_body):
+        Clients.apps_v1().patch_namespaced_deployment(
+            name=self.name,
+            namespace=self.namespace,
+            body=patch_body
+        )
+    
+    def get_memory_hist(self , days:int):
+        monitoring_v3.QueryServiceClient().query_time_series()
+        query = f"""fetch k8s_container
+            | metric 'kubernetes.io/container/memory/used_bytes'
+            | filter
+                resource.project_id == '{self.project_id}'
+                &&
+                (metadata.system_labels.top_level_controller_name
+                == '{self.name}'
+                && metadata.system_labels.top_level_controller_type == 'Deployment')
+                &&
+                (resource.cluster_name == '{self.cluster_name}'
+                && resource.location == '{self.location}'
+                && resource.namespace_name == '{self.namespace}')
+                && (metric.memory_type == 'non-evictable')
+            | group_by 1m, [value_used_bytes_mean: mean(value.used_bytes)]
+            | every 1m
+            | group_by [],
+                [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]"""
+        
+        self.get_time_series()
+
+    # def get_time_series(self , filter:str , aggregation:monitoring_v3.Aggregation , days=0 ):
+    #     end = datetime.now(timezone.utc)
+    #     start = end - timedelta(days=days)
+
+    #     interval = monitoring_v3.TimeInterval(
+    #         start_time={"seconds": int(start.timestamp())},
+    #         end_time={"seconds": int(end.timestamp())},
+    #     )
+
+    #     request = {
+    #         "name": self.project_id,
+    #         "filter": filter,
+    #         "interval": interval,
+    #         "aggregation": aggregation,
+    #     }
+
+    #     values = []
+
+    #     try:
+    #         for serie in client.list_time_series(request=request):
+    #             values.extend(p.value.double_value for p in serie.points)
+    #     except Exception:
+    #         logging.exception(f"Metrics error")
+
+    #     return values, period
+
+    def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
         class MetricHistory:
             deployment: str
@@ -227,7 +284,7 @@ class Deployment(HistoricElement):
                     filter=filtro,
                     project=f"projects/{self.project_id}",
                     err_data=[self.namespace, container.name],
-                    **kwargs,
+                    days=days,
                 )
 
                 yield MetricHistory(
