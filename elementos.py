@@ -212,53 +212,48 @@ class Deployment(HistoricElement):
             body=patch_body
         )
     
-    def get_memory_hist(self , days:int):
-        monitoring_v3.QueryServiceClient().query_time_series()
-        query = f"""fetch k8s_container
-            | metric 'kubernetes.io/container/memory/used_bytes'
-            | filter
-                resource.project_id == '{self.project_id}'
-                &&
-                (metadata.system_labels.top_level_controller_name
-                == '{self.name}'
-                && metadata.system_labels.top_level_controller_type == 'Deployment')
-                &&
-                (resource.cluster_name == '{self.cluster_name}'
-                && resource.location == '{self.location}'
-                && resource.namespace_name == '{self.namespace}')
-                && (metric.memory_type == 'non-evictable')
-            | group_by 1m, [value_used_bytes_mean: mean(value.used_bytes)]
-            | every 1m
-            | group_by [],
-                [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]"""
+    def get_memory_hist(self , days:int , rate:str):
+        from pandas import DataFrame , to_datetime
+        client = monitoring_v3.QueryServiceClient()
+
+        query = f"""
+        fetch k8s_container
+        | metric 'kubernetes.io/container/memory/used_bytes'
+        | filter
+            resource.cluster_name == '{self.cluster_name}'
+            && resource.location == '{self.location}'
+            && resource.namespace_name == '{self.namespace}'
+            && metadata.system_labels.top_level_controller_name == '{self.name}'
+            && metadata.system_labels.top_level_controller_type == 'Deployment'
+            && metric.memory_type == 'non-evictable'
+        | group_by 1m, [value_used_bytes_mean: mean(value.used_bytes)]
+        | every 1m
+        | within {days}d
+        """
+
+        request = monitoring_v3.QueryTimeSeriesRequest(
+            name=f"projects/{self.project_id}",
+            query=query,
+        )
+
+        pager = client.query_time_series(request=request)
+        rows = []
+        for series in pager:
+            for points in series.point_data:
+                rows.append({
+                    "time" : points.time_interval.end_time,
+                    "bytes" : points.values[0].double_value
+                })
+
+        df = DataFrame(rows)
         
-        self.get_time_series()
+        df["time"] = to_datetime(df["time"])
 
-    # def get_time_series(self , filter:str , aggregation:monitoring_v3.Aggregation , days=0 ):
-    #     end = datetime.now(timezone.utc)
-    #     start = end - timedelta(days=days)
+        df.set_index("time", inplace=True)
+        df.sort_index(ascending=False, inplace=True)
 
-    #     interval = monitoring_v3.TimeInterval(
-    #         start_time={"seconds": int(start.timestamp())},
-    #         end_time={"seconds": int(end.timestamp())},
-    #     )
+        return rows
 
-    #     request = {
-    #         "name": self.project_id,
-    #         "filter": filter,
-    #         "interval": interval,
-    #         "aggregation": aggregation,
-    #     }
-
-    #     values = []
-
-    #     try:
-    #         for serie in client.list_time_series(request=request):
-    #             values.extend(p.value.double_value for p in serie.points)
-    #     except Exception:
-    #         logging.exception(f"Metrics error")
-
-    #     return values, period
 
     def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
