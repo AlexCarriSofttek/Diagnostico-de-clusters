@@ -188,9 +188,38 @@ class Analisys:
         # Valor con mayor tiempo acumulado
         return durations.most_common(1)[0][0]
 
+    def stationary_by_duration(values: List[float], period: int,
+                               precision: int = 4) -> float | None:
+        
+        if not values:
+            return None
+        durations = Counter()
+        for v in values:
+            durations[round(v, precision)] += period
+
+        # Valor con mayor tiempo acumulado
+        return durations.most_common(1)[0][0]
 
 if __name__ == "__main__":
-    METRICS = ["kubernetes.io/container/memory/used_bytes" , "kubernetes.io/container/cpu/core_usage_time"]
+    # a = Analisys("cpl-ssff-cnsulcc-dev-05122025").export_metrics_json(days=30 , rate="30s")
+    def test(df:pd.DataFrame):
+        if df.empty:
+                return None
 
-    a = Analisys("cpl-ssff-adqbbva-qa-13052025").get_resources_res(metrics=METRICS , hours=1)
-    print(a)
+        period = int(
+            df.index.to_series()
+            .diff()
+            .dt.total_seconds()
+            .median()
+        )
+
+        return Analisys.stationary_by_duration(
+            values=df.iloc[:,0].to_list(),
+            period=period,
+            precision=4,
+        )
+    e = Analisys("cpl-ssff-cnsulcc-dev-05122025")
+    for deployment in e.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+        res = deployment.get_cpu_hist(days=1 , rate="30s" , fn=test)
+        print(res)
+        break

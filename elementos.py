@@ -3,17 +3,17 @@ from kubernetes.client import models
 from kubernetes import client, config
 from datetime import datetime, timezone, timedelta
 from google.cloud.container_v1 import Cluster as Cluster_V1
-from google.cloud import container_v1 , monitoring_v3
-from google.cloud import resourcemanager_v3 as resource_manager
+from google.cloud import container_v1 , monitoring_v3 ,resourcemanager_v3 as resource_manager
 from google.api_core.exceptions import InvalidArgument
+from pandas import DataFrame , to_datetime
 from dataclasses import dataclass
 from typing import List
 
-def configurar_cliente_kubernetes():
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
+@dataclass(frozen=True)
+class History_Result:
+    deployment: str
+    metric: str
+    df: DataFrame
 
 class Clients:
     _core_v1 = None
@@ -37,53 +37,16 @@ class Clients:
         if cls._monitoring is None:
             cls._monitoring = monitoring_v3.MetricServiceClient()
         return cls._monitoring
-
-class HistoricElement:
-    def get_history(self, metric: str, filter: str,
-                    project: str, err_data: list, *,
-                    hours=0, days=0, weeks=0, period=10,):
-        client = Clients.monitoring()
-
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(hours=hours, days=days, weeks=weeks)
-
-        interval = monitoring_v3.TimeInterval(
-            start_time={"seconds": int(start.timestamp())},
-            end_time={"seconds": int(end.timestamp())},
-        )
-
-        aligner = (
-            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
-            if "cpu" in metric
-            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
-        )
-
-        aggregation = monitoring_v3.Aggregation(
-            alignment_period={"seconds": period},
-            per_series_aligner=aligner,
-            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX,
-        )
-
-        request = {
-            "name": project,
-            "filter": filter,
-            "interval": interval,
-            "aggregation": aggregation,
-        }
-
-        values = []
-
-        try:
-            for serie in client.list_time_series(request=request):
-                values.extend(p.value.double_value for p in serie.points)
-        except Exception:
-            logging.exception(f"Metrics error: {'/'.join(err_data)}")
-
-        return values, period
+    
+    @classmethod
+    def ts_query(cls):
+        if cls._monitoring is None:
+            cls._monitoring = monitoring_v3.QueryServiceClient()
+        return cls._monitoring
 
 class Project:
     def __init__(self, project_id: str):
-        configurar_cliente_kubernetes()
+        self.configurar_cliente_kubernetes()
         self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
         self.id = self._raw.project_id
         self.name = self._raw.display_name
@@ -100,6 +63,12 @@ class Project:
         self.clusters = [
             Cluster(c, self.id) for c in response.clusters
         ]
+
+    def configurar_cliente_kubernetes(self):
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
     
     def __repr__(self):
         return (
@@ -192,7 +161,7 @@ class Namespace:
                 f"{f"Deployments: {len(self.deployments)}" if self.deployments else ""}"
                 )
 
-class Deployment(HistoricElement):
+class Deployment():
     def __init__(self, raw: models.V1Deployment, project_id, cluster_name , location):
         self._raw:models.V1Deployment = raw
         self.name:str = raw.metadata.name
@@ -213,32 +182,11 @@ class Deployment(HistoricElement):
             body=patch_body
         )
     
-    def get_memory_hist(self , days:int , rate="1m"):
-        """
-        Obtiene el historial de memoria.
-        rate soporta h (horas), m (minutos) , s(segundos)
-        tamaño_del_rango / periodo <= 100,000. Ej 30 dias / 30s =  2592000/30 = 84,400 
-
-        Regresa un data frame de pandas acomodado
-
-        Parameters
-        ----------
-        days : int
-            Número de días a consultar. Debe ser mayor a 0.
-        rate : str
-            Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
-        """
-        from pandas import DataFrame , to_datetime
-        @dataclass(frozen=True)
-        class History:
-            deployment: str
-            metric: str
-            df: DataFrame
-        client = monitoring_v3.QueryServiceClient()
-        # Configutacion recomendad para 30 días 30s 
+    def get_memory_hist(self , days:int , rate="1m" , fn=None):
+        metric = "kubernetes.io/container/memory/used_bytes"
         query = f"""
         fetch k8s_container
-        | metric 'kubernetes.io/container/memory/used_bytes'
+        | metric '{metric}'
         | filter
             resource.cluster_name == '{self.cluster_name}'
             && resource.location == '{self.location}'
@@ -253,69 +201,40 @@ class Deployment(HistoricElement):
             [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
         """
 
-        request = monitoring_v3.QueryTimeSeriesRequest(
-            name=f"projects/{self.project_id}",
-            query=query,
-        )
+        df = DataFrame(self._time_series_query(query=query , metric=metric))
 
+        if df.empty:
+            return None
+        
+        df["time"] = to_datetime(df["time"])
+
+        df.set_index("time", inplace=True)
+        df.sort_index(ascending=True, inplace=True)
+        
         try:
-            pager = client.query_time_series(request=request)
-            rows = []
-            for series in pager:
-                for points in series.point_data:
-                    rows.append({
-                        "time" : points.time_interval.end_time,
-                        "bytes" : points.values[0].double_value
-                    })
-
-            df = DataFrame(rows)
+            if fn is not None:
+                return fn(df)
             
-            df["time"] = to_datetime(df["time"])
-
-            df.set_index("time", inplace=True)
-            df.sort_index(ascending=True, inplace=True)
-
-            df["time_delta_seconds"] = (
-                df.index - df.index[0]
-            ).total_seconds()
-
-            return History(
+            else:
+                return History_Result(
                 deployment= self.name,
-                metric= 'kubernetes.io/container/memory/used_bytes',
+                metric= metric,
                 df= df
-            ) 
+                ) 
+            
+        except Exception as e:
+            logging.error("Error procesando historial")
         
         except InvalidArgument as e:
             print("Escediste el numero de muestras")
             print("Revisa que no excedan 100,000")
             return None   
 
-    def get_cpu_hist(self , days:int , rate="1m"):
-        from pandas import DataFrame , to_datetime
-        @dataclass(frozen=True)
-        class History:
-            deployment: str
-            metric: str
-            df: DataFrame
-        """
-        Obtiene el historial de cpu.
-        rate soporta h (horas), m (minutos) , s(segundos)
-        tamaño_del_rango / periodo <= 100,000. Ej 30 dias / 30s =  2592000/30 = 84,400 
-
-        Regresa un data frame de pandas acomodado
-
-        Parameters
-        ----------
-        days : int
-            Número de días a consultar. Debe ser mayor a 0.
-        rate : str
-            Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
-        """
-        client = monitoring_v3.QueryServiceClient()
-
+    def get_cpu_hist(self , days:int , rate="1m" , fn=None):
+        metric = "kubernetes.io/container/cpu/core_usage_time"
         query = f"""
         fetch k8s_container
-        | metric 'kubernetes.io/container/cpu/core_usage_time'
+        | metric '{metric}'
         | filter
             resource.cluster_name == '{self.cluster_name}'
             && resource.location == '{self.location}'
@@ -329,6 +248,34 @@ class Deployment(HistoricElement):
             [value_core_usage_time_aggregate: aggregate(value.core_usage_time)]
         """
 
+        df = DataFrame(self._time_series_query(query=query , metric=metric))
+
+        if df.empty:
+            return None
+        
+        df["time"] = to_datetime(df["time"])
+
+        df.set_index("time", inplace=True)
+        df.sort_index(ascending=True, inplace=True)
+        
+        try:
+            if fn is not None:
+                return fn(df)
+            
+            else:
+                return History_Result(
+                deployment= self.name,
+                metric= metric,
+                df= df
+                ) 
+            
+        except Exception as e:
+            logging.error(f"Error procesando historial {e}")
+
+    def _time_series_query(self , query , metric:str):
+        metric = metric.split("/")[-1]
+        client = Clients.ts_query()
+
         request = monitoring_v3.QueryTimeSeriesRequest(
             name=f"projects/{self.project_id}",
             query=query,
@@ -341,30 +288,15 @@ class Deployment(HistoricElement):
                 for points in series.point_data:
                     rows.append({
                         "time" : points.time_interval.end_time,
-                        "cores" : points.values[0].double_value
+                        metric : points.values[0].double_value
                     })
-
-            df = DataFrame(rows)
             
-            df["time"] = to_datetime(df["time"])
+            return rows
 
-            df.set_index("time", inplace=True)
-            df.sort_index(ascending=True, inplace=True)
-            
-            df["time_delta_seconds"] = (
-                df.index - df.index[0]
-            ).total_seconds()
-
-            return History(
-                deployment= self.name,
-                metric= 'kubernetes.io/container/memory/used_bytes',
-                df= df
-            ) 
-        
         except InvalidArgument as e:
             print("Escediste el numero de muestras")
             print("Revisa que no excedan 100,000")
-            return None     
+            return None
 
     def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
@@ -385,7 +317,7 @@ class Deployment(HistoricElement):
                     f'AND resource.labels.container_name = "{container.name}"'
                 )
 
-                values, period = super().get_history(
+                values, period = self.get_history(
                     metric=metric,
                     filter=filtro,
                     project=f"projects/{self.project_id}",
@@ -418,6 +350,48 @@ class Deployment(HistoricElement):
                 resources.requests,
             )
     
+    def get_history(self, metric: str, filter: str,
+                    project: str, err_data: list, *,
+                    hours=0, days=0, weeks=0, period=10,):
+        client = Clients.monitoring()
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours, days=days, weeks=weeks)
+
+        interval = monitoring_v3.TimeInterval(
+            start_time={"seconds": int(start.timestamp())},
+            end_time={"seconds": int(end.timestamp())},
+        )
+
+        aligner = (
+            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
+            if "cpu" in metric
+            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
+        )
+
+        aggregation = monitoring_v3.Aggregation(
+            alignment_period={"seconds": period},
+            per_series_aligner=aligner,
+            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX,
+        )
+
+        request = {
+            "name": project,
+            "filter": filter,
+            "interval": interval,
+            "aggregation": aggregation,
+        }
+
+        values = []
+
+        try:
+            for serie in client.list_time_series(request=request):
+                values.extend(p.value.double_value for p in serie.points)
+        except Exception:
+            logging.exception(f"Metrics error: {'/'.join(err_data)}")
+
+        return values, period
+
     def parse_interval(interval: str) -> int:
         UNITS_IN_SECONDS = {
             "s": 1,
