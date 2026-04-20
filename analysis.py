@@ -1,12 +1,11 @@
 from explorador import Explorador
+from elementos import Deployment
 from collections import Counter
 from typing import List
+from dataclasses import dataclass
 from converters import bytes2mi , cpu2millicores
 import pandas as pd
 
-# Nota: 7 días de datos es pesado pero deberia de cubrir la
-# mayoria de los casos
-# 
 # Teoria para cuando stat values es = 0 sin motivo es que 
 # haya que tomar el segundo acumulado mas concurrido 
 
@@ -44,97 +43,137 @@ class Analisys:
 
         return df
 
-    def get_resources_res(self , metrics: List[str] , hours=0 , days=0 , weeks=0):
-        dfs = []
-        for deployment in self.explorer.iter_deployments():
-            df_resources = pd.DataFrame([
-                {   
-                    "deployment": r.deployment,
-                    "container": r.container,            
-                    "cpu_request": (
-                        r.requests.get("cpu")
-                        if r.requests and isinstance(r.requests, dict)
-                        else "N/A"
-                    ),
-                    "cpu_limit": (
-                        r.limits.get("cpu")
-                        if r.limits and isinstance(r.limits, dict)
-                        else "N/A"
-                    ),
-                    "mem_request": (
-                        r.requests.get("memory")
-                        if r.requests and isinstance(r.requests, dict)
-                        else "N/A"
-                    ),
-                    "mem_limit": (
-                        r.limits.get("memory")
-                        if r.limits and isinstance(r.limits, dict)
-                        else "N/A"
-                    )
-                }
-                for r in deployment.iter_current_lr()
-            ])
-            
-            df_metrics = pd.DataFrame([
-                {
-                    "deployment": m.deployment,
-                    "container": m.container,
-                    "metric": m.metric,
-                    "Stat value": self.stationary_by_duration(m.values , m.period),
-                    #"period": m.period
-                }
-                for m in deployment.iter_history(metrics=metrics,
-            hours=hours , days=days , weeks=weeks)
-            ])
-            
-            df_metrics = (
-                df_metrics
-                .pivot_table(
-                    index=["deployment", "container"],
-                    columns="metric",
-                    values="Stat value",
-                    aggfunc="first"
+    def get_current_resources(deployment:Deployment):
+        df_resources = pd.DataFrame([
+            {   
+                "deployment": r.deployment,
+                "container": r.container,            
+                "cpu_request": (
+                    r.requests.get("cpu")
+                    if r.requests and isinstance(r.requests, dict)
+                    else "N/A"
+                ),
+                "cpu_limit": (
+                    r.limits.get("cpu")
+                    if r.limits and isinstance(r.limits, dict)
+                    else "N/A"
+                ),
+                "mem_request": (
+                    r.requests.get("memory")
+                    if r.requests and isinstance(r.requests, dict)
+                    else "N/A"
+                ),
+                "mem_limit": (
+                    r.limits.get("memory")
+                    if r.limits and isinstance(r.limits, dict)
+                    else "N/A"
                 )
-                .reset_index().rename(columns={"kubernetes.io/container/cpu/core_usage_time": "static_cpu",
-                                        "kubernetes.io/container/memory/used_bytes": "static_memory"})
-            )
+            }
+            for r in deployment.iter_current_lr()
+        ])
 
-            dfs.append(pd.merge(
-                df_resources,
-                df_metrics,
-                on=["deployment", "container"],
-                how="left"
-            ))
-            
-        return pd.concat(dfs , ignore_index=True)
+        return df_resources
+
+    def get_resources_suggestion(self , deployment:Deployment , days=30 , rate="30s"):
+        cpu = deployment.get_cpu_hist(days=days , rate=rate)
+        memory = deployment.get_memory_hist(days=days , rate=rate)
+
+        cpu_period = int(
+            cpu.index.to_series()
+            .diff()
+            .dt.total_seconds()
+            .median()
+        )
+
+        memory_period = int(
+            memory.index.to_series()
+            .diff()
+            .dt.total_seconds()
+            .median()
+        )
+
+        stat_cpu = self.stationary_by_duration(
+            values=cpu["cores"].to_list(),
+            period=cpu_period,
+            precision=4
+        )
+
+        stat_memory = self.stationary_by_duration(
+            values=memory["bytes"].to_list(),
+            period=memory_period,
+            precision=4
+        )
+
+        return pd.DataFrame({
+            "deployment" : deployment.name,
+            "namespace" : deployment.namespace,
+            "cpu_static" : stat_cpu,
+            "memory_static" : stat_memory,
+            "recomended_cpu_request": stat_cpu * 1.4,
+            "recomended_cpu_limit" : "",
+            "recomended_memory_request": stat_memory * 1.4,
+            "recomended_memory_limit" : ""
+            }).set_index("deployment")
+
+    def get_resources_suggestions(self):
+        dfs = []
+        for deployment in Explorador.iter_deployments():
+            dfs.append(self.get_resources_suggestion(deployment=deployment))
+
+        df = pd.concat(dfs).sort_index()
+
+        return df  
     
-    def export_metrics_json(self, metrics: List[str], hours=0, days=0, weeks=0):
+    def export_metrics_json(self, days:int , rate="1m"):
         import json
         metrics_json = []
 
-        for deployment in self.explorer.iter_deployments():
-            for m in deployment.iter_history(
-                metrics=metrics,
-                hours=hours,
-                days=days,
-                weeks=weeks
-            ):
-                stat_value = self.stationary_by_duration(m.values, m.period)
+        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+            cpu = deployment.get_cpu_hist(days=days , rate=rate)
+            memory = deployment.get_memory_hist(days=days , rate=rate)
 
-                metrics_json.append(
-                    {
-                        "deployment": m.deploymentdeployment,
-                        "container": m.container,
-                        "metric": m.metric,
-                        "period": m.period,
-                        "values": m.values,
-                        "stat_value": stat_value
-                    }
-                )
+            cpu_period = int(
+                cpu.index.to_series()
+                .diff()
+                .dt.total_seconds()
+                .median()
+            )
+
+            memory_period = int(
+                memory.index.to_series()
+                .diff()
+                .dt.total_seconds()
+                .median()
+            )
+
+            stat_cpu = self.stationary_by_duration(
+                values=cpu["cores"].to_list(),
+                period=cpu_period,
+                precision=4
+            )
+
+            stat_memory = self.stationary_by_duration(
+                values=memory["bytes"].to_list(),
+                period=memory_period,
+                precision=4
+            )
+            
+            metrics_json.append(
+                {
+                    "deployment": deployment.name,
+                    "cpu_values": cpu["cores"].to_list(),
+                    "cpu_times" : cpu["time"].to_list(),
+                    "cpu_period": cpu_period,
+                    "cpu_stat" : stat_cpu,
+                    "memory_values": memory["bytes"].to_list(),
+                    "memory_times" : memory["time"].to_list(),
+                    "memory_period": memory_period,
+                    "memory_stat" : stat_memory,
+                }
+            )
 
         with open("metrics_history.json", "w") as f:
             json.dump(metrics_json, f, indent=2)
-    
     # En este caso funciona por encontrar el valor en el que el 
     # deployment pasa más tiempo. 
     def stationary_by_duration(self , values: List[float], period: int,

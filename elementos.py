@@ -1,4 +1,4 @@
-import logging
+import logging , re
 from kubernetes.client import models
 from kubernetes import client, config
 from datetime import datetime, timezone, timedelta
@@ -214,7 +214,6 @@ class Deployment(HistoricElement):
         )
     
     def get_memory_hist(self , days:int , rate="1m"):
-        
         """
         Obtiene el historial de memoria.
         rate soporta h (horas), m (minutos) , s(segundos)
@@ -229,8 +228,12 @@ class Deployment(HistoricElement):
         rate : str
             Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
         """
-
         from pandas import DataFrame , to_datetime
+        @dataclass(frozen=True)
+        class History:
+            deployment: str
+            metric: str
+            df: DataFrame
         client = monitoring_v3.QueryServiceClient()
         # Configutacion recomendad para 30 días 30s 
         query = f"""
@@ -276,14 +279,24 @@ class Deployment(HistoricElement):
                 df.index - df.index[0]
             ).total_seconds()
 
-            return df 
+            return History(
+                deployment= self.name,
+                metric= 'kubernetes.io/container/memory/used_bytes',
+                df= df
+            ) 
         
         except InvalidArgument as e:
             print("Escediste el numero de muestras")
             print("Revisa que no excedan 100,000")
-            return None     
+            return None   
 
     def get_cpu_hist(self , days:int , rate="1m"):
+        from pandas import DataFrame , to_datetime
+        @dataclass(frozen=True)
+        class History:
+            deployment: str
+            metric: str
+            df: DataFrame
         """
         Obtiene el historial de cpu.
         rate soporta h (horas), m (minutos) , s(segundos)
@@ -298,8 +311,6 @@ class Deployment(HistoricElement):
         rate : str
             Cada cuando se toma o comprime una muestra, 'valor numerico' + 'metrica'. Ej: 1s
         """
-
-        from pandas import DataFrame , to_datetime
         client = monitoring_v3.QueryServiceClient()
 
         query = f"""
@@ -344,7 +355,11 @@ class Deployment(HistoricElement):
                 df.index - df.index[0]
             ).total_seconds()
 
-            return df 
+            return History(
+                deployment= self.name,
+                metric= 'kubernetes.io/container/memory/used_bytes',
+                df= df
+            ) 
         
         except InvalidArgument as e:
             print("Escediste el numero de muestras")
@@ -402,6 +417,25 @@ class Deployment(HistoricElement):
                 resources.limits,
                 resources.requests,
             )
+    
+    def parse_interval(interval: str) -> int:
+        UNITS_IN_SECONDS = {
+            "s": 1,
+            "m": 60,
+            "h": 3600,
+            "d": 86400,
+        }
+
+        """
+        Convierte un intervalo como '5s', '10m', '2h' en segundos.
+        """
+        match = re.fullmatch(r"(\d+)\s*([smhd])", interval.lower())
+        
+        if not match:
+            raise ValueError(f"Intervalo inválido: {interval}")
+        
+        value, unit = match.groups()
+        return int(value) * UNITS_IN_SECONDS[unit]
 
     def __repr__(self):
         return (f"Deployment("
