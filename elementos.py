@@ -1,4 +1,4 @@
-import logging , re
+import logging , re , math
 from kubernetes.client import models
 from kubernetes import client, config
 from datetime import datetime, timezone, timedelta
@@ -14,6 +14,20 @@ class History_Result:
     deployment: str
     metric: str
     df: DataFrame
+
+class UnitsCon:
+    # Clase con conversion de unidades 
+    def bytes2mi(bytes_value): 
+        return int(bytes_value) / (1024 * 1024)
+
+    def bytes2gi(bytes_value: float) -> float:
+        return int(bytes_value) / (1024 ** 3)
+
+    def cpu2millicores(cpu):
+        return int(cpu) * 1000
+
+    def mb2mi(mb: float) -> float:
+        return int(mb) * 1_000_000 / 1_048_576
 
 class Clients:
     _core_v1 = None
@@ -184,24 +198,27 @@ class Deployment():
     
     def get_memory_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/memory/used_bytes"
-        query = f"""
-        fetch k8s_container
-        | metric '{metric}'
-        | filter
-            resource.cluster_name == '{self.cluster_name}'
-            && resource.location == '{self.location}'
-            && resource.namespace_name == '{self.namespace}'
-            && metadata.system_labels.top_level_controller_name == '{self.name}'
-            && metadata.system_labels.top_level_controller_type == 'Deployment'
-            && metric.memory_type == 'non-evictable'
-        | group_by {rate}, [value_used_bytes_mean: mean(value.used_bytes)]
-        | every {rate}
-        | within {days}d
-        | group_by [],
-            [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
-        """
+        rows = []
+        for interval in self._parse_interval(days , rate):
+            query = f"""
+            fetch k8s_container
+            | metric '{metric}'
+            | filter
+                resource.cluster_name == '{self.cluster_name}'
+                && resource.location == '{self.location}'
+                && resource.namespace_name == '{self.namespace}'
+                && metadata.system_labels.top_level_controller_name == '{self.name}'
+                && metadata.system_labels.top_level_controller_type == 'Deployment'
+                && metric.memory_type == 'non-evictable'
+            | group_by {rate}, [value_used_bytes_mean: mean(value.used_bytes)]
+            | every {rate}
+            | within {days}d
+            | group_by [],
+                [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
+            """
+            rows.extend(self._time_series_query(query=query , metric=metric))
 
-        df = DataFrame(self._time_series_query(query=query , metric=metric))
+        df = DataFrame(rows)
 
         if df.empty:
             return None
@@ -210,6 +227,10 @@ class Deployment():
 
         df.set_index("time", inplace=True)
         df.sort_index(ascending=True, inplace=True)
+
+        df["time_delta_seconds"] = (
+            df.index - df.index[0]
+        ).total_seconds()
         
         try:
             if fn is not None:
@@ -232,23 +253,27 @@ class Deployment():
 
     def get_cpu_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/cpu/core_usage_time"
-        query = f"""
-        fetch k8s_container
-        | metric '{metric}'
-        | filter
-            resource.cluster_name == '{self.cluster_name}'
-            && resource.location == '{self.location}'
-            && resource.namespace_name == '{self.namespace}'
-            && metadata.system_labels.top_level_controller_name == '{self.name}'
-            && metadata.system_labels.top_level_controller_type == 'Deployment'
-        | align rate(1m)
-        | every {rate}
-        | within {days}d
-        | group_by [],
-            [value_core_usage_time_aggregate: aggregate(value.core_usage_time)]
-        """
+        rows = []
+        for interval in self._parse_interval(days , rate):
+            query = f"""
+            fetch k8s_container
+            | metric '{metric}'
+            | filter
+                resource.cluster_name == '{self.cluster_name}'
+                && resource.location == '{self.location}'
+                && resource.namespace_name == '{self.namespace}'
+                && metadata.system_labels.top_level_controller_name == '{self.name}'
+                && metadata.system_labels.top_level_controller_type == 'Deployment'
+            | align rate(1m)
+            | every {rate}
+            | within {interval[0]} {f", {interval[1]}" if interval[1] != "0s" else ""}
+            | group_by [],
+                [value_core_usage_time_aggregate: aggregate(value.core_usage_time)]
+            """
 
-        df = DataFrame(self._time_series_query(query=query , metric=metric))
+            rows.extend(self._time_series_query(query=query , metric=metric))
+
+        df = DataFrame(rows)
 
         if df.empty:
             return None
@@ -257,7 +282,11 @@ class Deployment():
 
         df.set_index("time", inplace=True)
         df.sort_index(ascending=True, inplace=True)
-        
+
+        df["time_delta_seconds"] = (
+            df.index - df.index[0]
+        ).total_seconds()
+
         try:
             if fn is not None:
                 return fn(df)
@@ -296,7 +325,8 @@ class Deployment():
         except InvalidArgument as e:
             print("Escediste el numero de muestras")
             print("Revisa que no excedan 100,000")
-            return None
+            print(f"{e}")
+            return []
 
     def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
@@ -392,7 +422,8 @@ class Deployment():
 
         return values, period
 
-    def parse_interval(interval: str) -> int:
+    def _parse_interval(self , days:int , interval: str) -> list[str]:
+        chunk_size =  99999
         UNITS_IN_SECONDS = {
             "s": 1,
             "m": 60,
@@ -400,16 +431,31 @@ class Deployment():
             "d": 86400,
         }
 
-        """
-        Convierte un intervalo como '5s', '10m', '2h' en segundos.
-        """
         match = re.fullmatch(r"(\d+)\s*([smhd])", interval.lower())
-        
         if not match:
-            raise ValueError(f"Intervalo inválido: {interval}")
-        
+            raise ValueError(f"Formato inválido: {interval}")
         value, unit = match.groups()
-        return int(value) * UNITS_IN_SECONDS[unit]
+
+        days_s = days * UNITS_IN_SECONDS.get("d")
+        interval = int(value) * UNITS_IN_SECONDS.get(unit)
+        
+        total = int(math.ceil(days_s/interval))
+        rate_seconds = int(value) * UNITS_IN_SECONDS[unit]
+
+        segments = []
+
+        for start in range(0, total, chunk_size):
+            end = min(start + chunk_size, total)
+            
+            start_sec = start * rate_seconds
+            end_sec = end * rate_seconds
+
+            segments.append((
+                        f"-{end_sec}s",
+                        f"-{start_sec}s" if start_sec > 0 else "0s",
+                    ))
+
+        return segments 
 
     def __repr__(self):
         return (f"Deployment("

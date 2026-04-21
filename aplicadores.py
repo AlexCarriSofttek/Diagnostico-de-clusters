@@ -1,6 +1,6 @@
 import pandas as pd
-import converters as c
 from explorador import Explorador
+from elementos import UnitsCon as uc
 
 class Applicador_GCP:
     # No es robusto así que se tiene que usar con precaucion 
@@ -13,9 +13,9 @@ class Applicador_GCP:
                 raise ValueError("Deployment no encontrado")
             
             memory_limit = str(
-                c.mb2mi(row["RECOMMENDED_MEMORY_LIMIT_MB"].iloc[0]))
+                uc.mb2mi(row["RECOMMENDED_MEMORY_LIMIT_MB"].iloc[0]))
             memory_request =  str(
-                c.mb2mi(row["RECOMMENDED_MEMORY_REQUEST_MB"].iloc[0]))
+                uc.mb2mi(row["RECOMMENDED_MEMORY_REQUEST_MB"].iloc[0]))
             cpu_limit = str(row["RECOMMENDED_CPU_LIMIT"].iloc[0] * 1000)
             cpu_request = str(row["RECOMMENDED_CPU_REQUEST"].iloc[0] * 1000)
 
