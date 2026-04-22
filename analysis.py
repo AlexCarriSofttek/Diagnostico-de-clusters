@@ -12,10 +12,19 @@ MEMORY_MIN_REQUEST = None
 MEMORY_MIN_LIMIT = None
 
 class Analisys:
-    def __init__(self , project_id: str):
-        self.explorer = Explorador(project_id=project_id)
+    def __init__(self , project:str|Explorador):
+        if isinstance(project, Explorador):
+            self.explorer = project
 
-    def limits_requests_format(self , days=1 , rate="1m"):
+        elif isinstance(project, str):
+            self.explorer = Explorador(project_id=project)
+
+        else:
+            raise TypeError(
+                "Analisys espera un project_id (str) o un Explorador"
+            )
+
+    def limits_requests_format(self , days=1 , rate="1m" , csv=False):
         df = self.get_resources_suggestions(days=days , rate=rate)
         
         df["static_cpu"] = df["static_cpu"].apply(uc.cpu2millicores)
@@ -45,9 +54,14 @@ class Analisys:
             lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
         )
 
+        # Backup
+        self.get_current_resources().to_csv("back_up.csv")
+
+        if csv: df.to_csv
+
         return df
 
-    def get_current_resources(deployment:Deployment) -> pd.DataFrame:
+    def get_current_resource(deployment:Deployment) -> pd.DataFrame:
         df_resources = pd.DataFrame([
             {   
                 "deployment": r.deployment,
@@ -77,10 +91,18 @@ class Analisys:
         ])
 
         return df_resources
-    
-    def export_metrics_json(self, days:int , rate="1m"):
+
+    def get_current_resources(self) -> pd.DataFrame:
+        dfs = []
+        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+            dfs.append(self.get_current_resource(deployment=deployment))
+
+        df = pd.concat(dfs).sort_index()
+
+        return df  
+
+    def export_metrics_json(self, days:int , rate="1m") -> None:
         import json
-        metrics_json = []
 
         if days > 20:
             fn = Analisys.segmented_stat
@@ -99,7 +121,7 @@ class Analisys:
                 cpu_hist = deployment.get_cpu_hist(days=days , rate=rate).df
                 memory_hist = deployment.get_memory_hist(days=days , rate=rate).df
 
-                if cpu_hist.empty() and memory_hist.empty():
+                if cpu_hist.empty and memory_hist.empty:
                     continue
 
                 cpu_stat , cpu_request , cpu_limit = fn(cpu_hist)
@@ -123,7 +145,7 @@ class Analisys:
             f.write("\n]")
             print("Json guardado")
 
-    def mem_cpu_suggestion(self , deployment:Deployment , days=30 , rate="30s"):
+    def mem_cpu_suggestion(self , deployment:Deployment , days=30 , rate="30s") -> pd.DataFrame:
         if days > 20:
             fn = Analisys.segmented_stat
         else:
@@ -145,7 +167,7 @@ class Analisys:
         sugestion.index.name = "deployment"
         return sugestion
 
-    def get_resources_suggestions(self , days=30 , rate="30s"):
+    def get_resources_suggestions(self , days=30 , rate="30s") -> pd.DataFrame:
         dfs = []
         for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
             dfs.append(self.mem_cpu_suggestion(deployment=deployment , days=days , rate=rate))
@@ -184,7 +206,7 @@ class Analisys:
         )
 
         request = stat * 1.4
-        limit = max(stat * 2 , df.iloc[:,0].quantile(0.999))
+        limit = max(stat * 2.5 , df.iloc[:,0].quantile(0.999))
 
         return stat , request , limit
 
@@ -212,6 +234,6 @@ class Analisys:
         values = df.iloc[:,0]
         static = values.resample("10D").apply(stat_).max()
         request = static * 1.4
-        limit = max(static * 2 , values.quantile(0.99))
+        limit = max(static * 2.5 , values.quantile(0.99))
 
         return static , request , limit

@@ -1,20 +1,30 @@
 # Este script es el punto principal de la herramienta
-# Sin embargo considere que se esta segmentando los puntos 
-# de la herramienta con base a su funcion 
+# Cada funcion funge como ejemplo GENERAL de lo que puede  
+# hacer con la herramienta
+from pandas import DataFrame
+from explorador import Explorador
+from analysis import Analisys
 
-import sys
-import os
+def hist_cpu_mem(explorador:Explorador) -> DataFrame:
+    # Este ejemplo analiza el histograma del consumo de 
+    # Memoria y CPU por deployment. Tome en cuenta que 
+    # se aplica un filtro de los deployments con las palabras
+    # clave "kube" , "gmp" , "gke" , "default".
+    result = Analisys(Explorador).limits_requests_format(days=30, # Días previos a hoy 
+                                                  rate="30s", # Se agrupa cada 30 segundos
+                                                  csv=False # Se guarda un csv
+                                                  )
+    print(result) # Por fines demostrativos
+    return result
+    
 
-# Fix encoding for Windows
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+if __name__ == "__main__":
+    project_ids = [
+        "cpl-ssff-cnsulcc-dev-05122025",
+    ]
 
-try:
-    from google.cloud import monitoring_v3
-    from google.protobuf.timestamp_pb2 import Timestamp
-    HAS_MONITORING = True
-except ImportError:
-    HAS_MONITORING = False
-    print("⚠️  google-cloud-monitoring no instalado. Instala con: pip install google-cloud-monitoring")
-
+    for project_id in project_ids:
+        explorador = Explorador(project_id=project_id)
+        recomendaciones = hist_cpu_mem(explorador=explorador)
+        
+        

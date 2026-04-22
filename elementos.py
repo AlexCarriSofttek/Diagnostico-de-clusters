@@ -175,7 +175,7 @@ class Namespace:
                 f"{f"Deployments: {len(self.deployments)}" if self.deployments else ""}"
                 )
 
-class Deployment():
+class Deployment:
     def __init__(self, raw: models.V1Deployment, project_id, cluster_name , location):
         self._raw:models.V1Deployment = raw
         self.name:str = raw.metadata.name
