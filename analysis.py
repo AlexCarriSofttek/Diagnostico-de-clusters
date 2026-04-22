@@ -82,54 +82,46 @@ class Analisys:
         import json
         metrics_json = []
 
-        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-            
-            cpu = deployment.get_cpu_hist(days=days , rate=rate).df
-            memory = deployment.get_memory_hist(days=days , rate=rate).df
-
-            cpu_period = int(
-                cpu.index.to_series()
-                .diff()
-                .dt.total_seconds()
-                .median()
-            )
-
-            memory_period = int(
-                memory.index.to_series()
-                .diff()
-                .dt.total_seconds()
-                .median()
-            )
-
-            stat_cpu = self.stationary_by_duration(
-                values=cpu.iloc[:,0].to_list(),
-                period=cpu_period,
-                precision=4
-            )
-
-            stat_memory = self.stationary_by_duration(
-                values=memory.iloc[:,0].to_list(),
-                period=memory_period,
-                precision=4
-            )
-            
-            metrics_json.append(
-                {
-                    "deployment": deployment.name,
-                    "cpu_values": cpu.iloc[:,0].to_list(),
-                    "cpu_times" : cpu["time_delta_seconds"].to_list(),
-                    "cpu_period": cpu_period,
-                    "cpu_stat" : stat_cpu,
-                    "memory_values": memory.iloc[:,0].to_list(),
-                    "memory_times" : memory["time_delta_seconds"].to_list(),
-                    "memory_period": memory_period,
-                    "memory_stat" : stat_memory,
-                }
-            )
-            break
+        if days > 20:
+            fn = Analisys.segmented_stat
+        else:
+            fn = Analisys.resume_stat
 
         with open("metrics_history.json", "w") as f:
-            json.dump(metrics_json, f, indent=2)
+            f.write("[\n")
+            first = True
+
+            for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+                if not first:      
+                    f.write("[\n")
+                first = False
+
+                cpu_hist = deployment.get_cpu_hist(days=days , rate=rate).df
+                memory_hist = deployment.get_memory_hist(days=days , rate=rate).df
+
+                if cpu_hist.empty() and memory_hist.empty():
+                    continue
+
+                cpu_stat , cpu_request , cpu_limit = fn(cpu_hist)
+                memory_stat , memory_request , memory_limit = fn(memory_hist)
+                
+                json.dump(
+                    {
+                        "deployment": deployment.name,
+                        "cpu_values": cpu_hist.iloc[:,0].to_list(),
+                        "cpu_times" : cpu_hist["time_delta_seconds"].to_list(),
+                        "cpu_stat": cpu_stat,
+                        "cpu_request" : cpu_request,
+                        "cpu_limit" : cpu_limit,
+                        "memory_values": memory_hist.iloc[:,0].to_list(),
+                        "memory_times" : memory_hist["time_delta_seconds"].to_list(),
+                        "memory_stat": memory_stat,
+                        "memory_request" : memory_request,
+                        "memory_limit" : memory_limit,
+                    } , f , ensure_ascii=False,
+                )
+            f.write("\n]")
+            print("Json guardado")
 
     def mem_cpu_suggestion(self , deployment:Deployment , days=30 , rate="30s"):
         if days > 20:
@@ -192,7 +184,7 @@ class Analisys:
         )
 
         request = stat * 1.4
-        limit = max(stat * 2 , df.iloc[:,0].quantile(0.99))
+        limit = max(stat * 2 , df.iloc[:,0].quantile(0.999))
 
         return stat , request , limit
 
@@ -223,27 +215,3 @@ class Analisys:
         limit = max(static * 2 , values.quantile(0.99))
 
         return static , request , limit
-
-if __name__ == "__main__":
-    # a = Analisys("cpl-ssff-cnsulcc-dev-05122025").export_metrics_json(days=30 , rate="30s")
-    def test(df:pd.DataFrame):
-        if df.empty:
-                return None
-
-        period = int(
-            df.index.to_series()
-            .diff()
-            .dt.total_seconds()
-            .median()
-        )
-
-        return Analisys.stationary_by_duration(
-            values=df.iloc[:,0].to_list(),
-            period=period,
-            precision=4,
-        )
-    e = Analisys("cpl-ssff-cnsulcc-dev-05122025")
-    for deployment in e.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-        res = deployment.get_cpu_hist(days=1 , rate="30s" , fn=test)
-        print(res)
-        break

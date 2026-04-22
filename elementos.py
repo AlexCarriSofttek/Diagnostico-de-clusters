@@ -212,7 +212,7 @@ class Deployment():
                 && metric.memory_type == 'non-evictable'
             | group_by {rate}, [value_used_bytes_mean: mean(value.used_bytes)]
             | every {rate}
-            | within {days}d
+            | within {interval[0]} {f", {interval[1]}" if interval[1] != "0s" else ""}
             | group_by [],
                 [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
             """
