@@ -4,6 +4,12 @@
 from pandas import DataFrame
 from explorador import Explorador
 from analysis import Analisys
+# Pendientes
+# - Loggs
+# - Establecer nombres de archivo con fecha actual
+# - Agregar los req/lim actuales al suggestions
+# - Rollback con los anteriores
+# - Documentacion 
 
 def hist_cpu_mem(explorador:Explorador) -> DataFrame:
     # Este ejemplo analiza el histograma del consumo de 
@@ -14,7 +20,7 @@ def hist_cpu_mem(explorador:Explorador) -> DataFrame:
                                                   rate="30s", # Se agrupa cada 30 segundos
                                                   csv=False # Se guarda un csv
                                                   )
-    print(result) # Por fines demostrativos
+    #print(result) # Por fines demostrativos
     return result
     
 
@@ -26,5 +32,5 @@ if __name__ == "__main__":
     for project_id in project_ids:
         explorador = Explorador(project_id=project_id)
         recomendaciones = hist_cpu_mem(explorador=explorador)
-        
+
         

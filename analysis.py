@@ -53,15 +53,18 @@ class Analisys:
         df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(
             lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
         )
+  
+        df["Aprovado (T/F)"] = False
+        df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
 
         # Backup
         self.get_current_resources().to_csv("back_up.csv")
 
-        if csv: df.to_csv
+        if csv: df.to_csv("suggestions.csv")
 
         return df
 
-    def get_current_resource(deployment:Deployment) -> pd.DataFrame:
+    def get_current_resource(self , deployment:Deployment) -> pd.DataFrame:
         df_resources = pd.DataFrame([
             {   
                 "deployment": r.deployment,
@@ -237,3 +240,10 @@ class Analisys:
         limit = max(static * 2.5 , values.quantile(0.99))
 
         return static , request , limit
+
+
+# Inventarios 
+# - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
+
+# Prueba con los ingres con más de 250 aplicativos (Sin cambiar nada)sd-cobranza , rt-carteras
+# Ni modificar NADA
