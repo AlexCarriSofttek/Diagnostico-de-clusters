@@ -1,13 +1,20 @@
 import logging , re , math
+from log_config import setup_logging
 from kubernetes.client import models
 from kubernetes import client, config
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta , date
 from google.cloud.container_v1 import Cluster as Cluster_V1
 from google.cloud import container_v1 , monitoring_v3 ,resourcemanager_v3 as resource_manager
 from google.api_core.exceptions import InvalidArgument
 from pandas import DataFrame , to_datetime
 from dataclasses import dataclass
 from typing import List
+
+setup_logging()
+logger = logging.getLogger(__name__)
+logger.info("Inicio del proceso")
+
+# Corregir el acceso a los proyectos
 
 @dataclass(frozen=True)
 class History_Result:
@@ -18,15 +25,23 @@ class History_Result:
 class UnitsCon:
     # Clase con conversion de unidades 
     def bytes2mi(bytes_value): 
+        if bytes_value is None or (isinstance(bytes_value, float) and math.isnan(bytes_value)):
+            return None
         return int(bytes_value) / (1024 * 1024)
 
     def bytes2gi(bytes_value: float) -> float:
+        if bytes_value is None or (isinstance(bytes_value, float) and math.isnan(bytes_value)):
+            return None
         return int(bytes_value) / (1024 ** 3)
 
     def cpu2millicores(cpu):
+        if cpu is None or (isinstance(cpu, float) and math.isnan(cpu)):
+            return None
         return int(cpu) * 1000
 
     def mb2mi(mb: float) -> float:
+        if mb is None or (isinstance(mb, float) and math.isnan(mb)):
+            return None
         return int(mb) * 1_000_000 / 1_048_576
 
 class Clients:
@@ -61,28 +76,39 @@ class Clients:
 class Project:
     def __init__(self, project_id: str):
         self.configurar_cliente_kubernetes()
-        self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
-        self.id = self._raw.project_id
-        self.name = self._raw.display_name
-        self.clusters: list[Cluster] | None = None
+        try:
+            self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
+            self.id = self._raw.project_id
+            self.name = self._raw.display_name
+            self.clusters: list[Cluster] | None = None
+            logger.info(f"{project_id} cargado correctamente")
+
+        except Exception as e:
+            logger.critical(f"Error cargando proyecto {project_id}: {e}")
 
     def load_clusters(self):
-        if self.clusters is not None:
-            return
+        try:
+            if self.clusters is not None:
+                return
 
-        client = container_v1.ClusterManagerClient()
-        response = client.list_clusters(
-            parent=f"projects/{self.id}/locations/-"
-        )
-        self.clusters = [
-            Cluster(c, self.id) for c in response.clusters
-        ]
+            client = container_v1.ClusterManagerClient()
+            response = client.list_clusters(
+                parent=f"projects/{self.id}/locations/-"
+            )
+            self.clusters = [
+                Cluster(c, self.id) for c in response.clusters
+            ]
+        except Exception as e:
+            logger.error(f"Error cargando clusters en {self.name}: {e}")
 
     def configurar_cliente_kubernetes(self):
         try:
             config.load_incluster_config()
         except config.ConfigException:
-            config.load_kube_config()
+            try:
+                config.load_kube_config()
+            except Exception as e:
+                logger.critical(f"Error creando el cliente de Kubernetes: {e}")
     
     def __repr__(self):
         return (
@@ -104,23 +130,31 @@ class Project:
 
 class Cluster:
     def __init__(self, raw:Cluster_V1, project_id: str):
-        self._raw = raw
-        self.name = raw.name
-        self.location = raw.location
-        self.status = raw.status.name
-        self.project_id = project_id
-        self.namespaces: list[Namespace] | None = None
+        try: 
+            self._raw = raw
+            self.name = raw.name
+            self.location = raw.location
+            self.status = raw.status.name
+            self.project_id = project_id
+            self.namespaces: list[Namespace] | None = None
+            logger.info(f"Cluster {self.name} cargado correctamente")
+
+        except Exception as e:
+            logger.error(f"Error cargando cluster {e}")
 
     def load_namespaces(self):
-        if self.namespaces is not None:
-            return
+        try:
+            if self.namespaces is not None:
+                return
 
-        v1 = Clients.core_v1()
-        response = v1.list_namespace()
-        self.namespaces = [
-            Namespace(ns, self.project_id, self.name , self.location)
-            for ns in response.items
-        ]
+            v1 = Clients.core_v1()
+            response = v1.list_namespace()
+            self.namespaces = [
+                Namespace(ns, self.project_id, self.name , self.location)
+                for ns in response.items
+            ]
+        except Exception as e:
+            logger.error(f"Error cargando namespaces en {self.name}: {e}")
 
     def __repr__(self):
         return (
@@ -142,24 +176,32 @@ class Cluster:
 
 class Namespace:
     def __init__(self, raw: models.V1Namespace, project_id, cluster_name , location):
-        self._raw = raw
-        self.name = raw.metadata.name
-        self.status = raw.status.phase
-        self.project_id = project_id
-        self.cluster_name = cluster_name
-        self.location = location
-        self.deployments: list[Deployment] | None = None
+        try:
+            self._raw = raw
+            self.name = raw.metadata.name
+            self.status = raw.status.phase
+            self.project_id = project_id
+            self.cluster_name = cluster_name
+            self.location = location
+            self.deployments: list[Deployment] | None = None
+
+        except Exception as e:
+            logger.error(f"Error cargando namespace: {e}")
 
     def load_deployments(self):
-        if self.deployments is not None:
-            return
+        try:
+            if self.deployments is not None:
+                return
 
-        apps = Clients.apps_v1()
-        response = apps.list_namespaced_deployment(namespace=self.name)
-        self.deployments = [
-            Deployment(d, self.project_id, self.cluster_name , self.location)
-            for d in response.items
-        ]
+            apps = Clients.apps_v1()
+            response = apps.list_namespaced_deployment(namespace=self.name)
+            self.deployments = [
+                Deployment(d, self.project_id, self.cluster_name , self.location)
+                for d in response.items
+            ]
+        
+        except Exception as e:
+            logger.error(f"Error cargando deployments en {self.name}: {e}")
 
     def __repr__(self):
         return (f"Namespace("
@@ -190,11 +232,15 @@ class Deployment:
         self.available_replicas:int = raw.status.available_replicas or 0
 
     def patch_deployment(self , patch_body):
-        Clients.apps_v1().patch_namespaced_deployment(
-            name=self.name,
-            namespace=self.namespace,
-            body=patch_body
-        )
+        try:
+            Clients.apps_v1().patch_namespaced_deployment(
+                name=self.name,
+                namespace=self.namespace,
+                body=patch_body
+            )
+        
+        except Exception as e:
+            logger.error(f"Error al aplicar el parche a {self.name}")
     
     def get_memory_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/memory/used_bytes"
@@ -221,7 +267,9 @@ class Deployment:
         df = DataFrame(rows)
 
         if df.empty:
-            return None
+            if fn is not None:
+                return None, None, None
+            return None , None , None
         
         df["time"] = to_datetime(df["time"])
 
@@ -244,12 +292,8 @@ class Deployment:
                 ) 
             
         except Exception as e:
-            logging.error("Error procesando historial")
-        
-        except InvalidArgument as e:
-            print("Escediste el numero de muestras")
-            print("Revisa que no excedan 100,000")
-            return None   
+            logger.error(f"Error en historial {self.name}:used_bytes {e}")
+            return None
 
     def get_cpu_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/cpu/core_usage_time"
@@ -276,7 +320,9 @@ class Deployment:
         df = DataFrame(rows)
 
         if df.empty:
-            return None
+            if fn is not None:
+                return None, None, None
+            return None , None , None
         
         df["time"] = to_datetime(df["time"])
 
@@ -296,10 +342,11 @@ class Deployment:
                 deployment= self.name,
                 metric= metric,
                 df= df
-                ) 
+                )
             
         except Exception as e:
-            logging.error(f"Error procesando historial {e}")
+            logger.error(f"Error en historial {self.name}:core_usage_time")
+            return None
 
     def _time_series_query(self , query , metric:str):
         metric = metric.split("/")[-1]
@@ -322,11 +369,13 @@ class Deployment:
             
             return rows
 
+        except Exception as e:
+            logger.error(f"Error en time_series {self.name} {metric}: {e}")
+            return None
+        
         except InvalidArgument as e:
-            print("Escediste el numero de muestras")
-            print("Revisa que no excedan 100,000")
-            print(f"{e}")
-            return []
+            logger.exception(f"Excediste el numero de muestras en {self.name}:{metric}")
+            return None   
 
     def iter_history(self, metrics: list[str], days=0):
         @dataclass(frozen=True)
@@ -347,21 +396,32 @@ class Deployment:
                     f'AND resource.labels.container_name = "{container.name}"'
                 )
 
-                values, period = self.get_history(
-                    metric=metric,
-                    filter=filtro,
-                    project=f"projects/{self.project_id}",
-                    err_data=[self.namespace, container.name],
-                    days=days,
-                )
+                try:
+                    values, period = self.get_history(
+                        metric=metric,
+                        filter=filtro,
+                        project=f"projects/{self.project_id}",
+                        err_data=[self.namespace, container.name],
+                        days=days,
+                    )
 
-                yield MetricHistory(
-                                deployment=self.name,
-                                metric=metric,
-                                container=container.name,
-                                values=values,
-                                period=period,
-                            )
+                    yield MetricHistory(
+                                    deployment=self.name,
+                                    metric=metric,
+                                    container=container.name,
+                                    values=values,
+                                    period=period,
+                                )
+                
+                except Exception as e:
+                    logger.error(f"Error al obtener el historial de {container.name}")
+                    yield MetricHistory(
+                                    deployment=self.name,
+                                    metric=metric,
+                                    container=container.name,
+                                    values=None,
+                                    period=None,
+                                )
 
     def iter_current_lr(self):
         @dataclass(frozen=True)
@@ -418,7 +478,7 @@ class Deployment:
             for serie in client.list_time_series(request=request):
                 values.extend(p.value.double_value for p in serie.points)
         except Exception:
-            logging.exception(f"Metrics error: {'/'.join(err_data)}")
+            logger.exception(f"Metrics error: {'/'.join(err_data)}")
 
         return values, period
 

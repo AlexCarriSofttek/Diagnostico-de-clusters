@@ -5,32 +5,24 @@ from pandas import DataFrame
 from explorador import Explorador
 from analysis import Analisys
 # Pendientes
-# - Loggs
-# - Establecer nombres de archivo con fecha actual
-# - Agregar los req/lim actuales al suggestions
-# - Rollback con los anteriores
+# - Agregar limpiar los NaN de los historiales
+# - Considerar el CPU en arranque. 
+# - Agregar el cargar pods
 # - Documentacion 
+# - Funciones en el aplicador para corregir si el deployment no tiene suficientes recursos
 
-def hist_cpu_mem(explorador:Explorador) -> DataFrame:
-    # Este ejemplo analiza el histograma del consumo de 
-    # Memoria y CPU por deployment. Tome en cuenta que 
-    # se aplica un filtro de los deployments con las palabras
-    # clave "kube" , "gmp" , "gke" , "default".
-    result = Analisys(Explorador).limits_requests_format(days=30, # Días previos a hoy 
-                                                  rate="30s", # Se agrupa cada 30 segundos
-                                                  csv=False # Se guarda un csv
-                                                  )
-    #print(result) # Por fines demostrativos
-    return result
+# Inventarios 
+# - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
+
+# Prueba con los ingres con más de 250 aplicativos (Sin cambiar nada)sd-cobranza , rt-carteras
+# Ni modificar NADA
+# Comparar los numeros de rogelio con los de la herramienta. 
     
 
 if __name__ == "__main__":
-    project_ids = [
-        "cpl-ssff-cnsulcc-dev-05122025",
-    ]
+    project_id = "cpl-ec-gcobranza-qa-18032025"
 
-    for project_id in project_ids:
-        explorador = Explorador(project_id=project_id)
-        recomendaciones = hist_cpu_mem(explorador=explorador)
+    a = Analisys(project=project_id)
+    a.limits_requests_format(days=30 , rate="1m") # Generar la tabla de sugerencias
 
         

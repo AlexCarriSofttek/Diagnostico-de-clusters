@@ -4,6 +4,10 @@ from collections import Counter
 from typing import List
 from dataclasses import dataclass
 import pandas as pd
+from datetime import date
+
+import logging
+logger = logging.getLogger(__name__)
 
 # Minimos para requests y limites
 CPU_MIN_REQUEST = 100
@@ -23,8 +27,10 @@ class Analisys:
             raise TypeError(
                 "Analisys espera un project_id (str) o un Explorador"
             )
+        
+        self.file_n_template = f"{self.explorer.project.name}_{date.today()}_"
 
-    def limits_requests_format(self , days=1 , rate="1m" , csv=False):
+    def limits_requests_format(self , days=1 , rate="1m"):
         df = self.get_resources_suggestions(days=days , rate=rate)
         
         df["static_cpu"] = df["static_cpu"].apply(uc.cpu2millicores)
@@ -58,9 +64,9 @@ class Analisys:
         df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
 
         # Backup
-        self.get_current_resources().to_csv("back_up.csv")
+        self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
 
-        if csv: df.to_csv("suggestions.csv")
+        df.to_csv(f"{self.file_n_template}suggestions.csv")
 
         return df
 
@@ -91,18 +97,21 @@ class Analisys:
                 )
             }
             for r in deployment.iter_current_lr()
-        ])
+        ]).set_index("deployment")
 
         return df_resources
 
     def get_current_resources(self) -> pd.DataFrame:
         dfs = []
-        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-            dfs.append(self.get_current_resource(deployment=deployment))
+        try:
+            for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+                dfs.append(self.get_current_resource(deployment=deployment))
 
-        df = pd.concat(dfs).sort_index()
+            df = pd.concat(dfs).sort_index()
 
-        return df  
+            return df
+        except Exception as e:
+            logger.warning(f"Advertencia cargando los recursos actuales")
 
     def export_metrics_json(self, days:int , rate="1m") -> None:
         import json
@@ -153,22 +162,26 @@ class Analisys:
             fn = Analisys.segmented_stat
         else:
             fn = Analisys.resume_stat
-        
-        cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=fn)
-        memory_stat , memory_request , memory_limit = deployment.get_memory_hist(days=days , rate=rate , fn=fn)
 
-        sugestion = pd.DataFrame({
-            "namespace" : deployment.namespace,
-            "static_cpu" : cpu_stat,
-            "static_memory" : memory_stat,
-            "recommended_cpu_request": cpu_request,
-            "recommended_cpu_limit" : cpu_limit,
-            "recommended_memory_request": memory_request,
-            "recommended_memory_limit" : memory_limit
-            },index=[deployment.name])
-            
-        sugestion.index.name = "deployment"
-        return sugestion
+        try:
+            cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=fn)
+            memory_stat , memory_request , memory_limit = deployment.get_memory_hist(days=days , rate=rate , fn=fn)
+
+            sugestion = pd.DataFrame({
+                "namespace" : deployment.namespace,
+                "static_cpu" : cpu_stat,
+                "static_memory" : memory_stat,
+                "recommended_cpu_request": cpu_request,
+                "recommended_cpu_limit" : cpu_limit,
+                "recommended_memory_request": memory_request,
+                "recommended_memory_limit" : memory_limit
+                },index=[deployment.name])
+                
+            sugestion.index.name = "deployment"
+            return sugestion
+        
+        except Exception as e:
+            logger.error(f"Error al generar las sugerencias de {deployment.name}")
 
     def get_resources_suggestions(self , days=30 , rate="30s") -> pd.DataFrame:
         dfs = []
@@ -194,13 +207,18 @@ class Analisys:
     def resume_stat(df:pd.DataFrame) -> float | None:
         if df.empty:
                 return None
-
-        period = int(
+        
+        period_seconds = (
             df.index.to_series()
             .diff()
             .dt.total_seconds()
             .median()
         )
+
+        if pd.isna(period_seconds) or period_seconds <= 0:
+                return None
+
+        period = int(period_seconds)
 
         stat = Analisys.stationary_by_duration(
             values=df.iloc[:,0].to_list(),
@@ -218,12 +236,17 @@ class Analisys:
             if values.empty:
                     return None
 
-            period = int(
-                values.index.to_series()
-                .diff()
-                .dt.total_seconds()
-                .median()
-            )
+            period_seconds = (
+                    values.index.to_series()
+                    .diff()
+                    .dt.total_seconds()
+                    .median()
+                )
+
+            if pd.isna(period_seconds) or period_seconds <= 0:
+                return None
+
+            period = int(period_seconds)
 
             return Analisys.stationary_by_duration(
                 values=values.to_list(),
@@ -242,8 +265,15 @@ class Analisys:
         return static , request , limit
 
 
-# Inventarios 
-# - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
 
-# Prueba con los ingres con más de 250 aplicativos (Sin cambiar nada)sd-cobranza , rt-carteras
-# Ni modificar NADA
+if __name__ == "__main__":
+    project_ids = [
+        "cpl-ssff-cnsulcc-dev-05122025",
+    ]
+
+    for project_id in project_ids:
+        explorador = Explorador(project_id=project_id)
+        analisis = Analisys(explorador)
+        recomendaciones = analisis.limits_requests_format(days=1 , rate="1m")
+        recomendaciones.loc[recomendaciones.index[0], 'Aprovado (T/F)'] = True
+        print(recomendaciones)
