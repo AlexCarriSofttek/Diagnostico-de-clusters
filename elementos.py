@@ -460,44 +460,84 @@ class Deployment:
         return segments 
 
     #------------- Funciones en base a la API moderna-------------#
-    def get_history(self, metric:str, days=0 , fn=None):
+    def get_cpu_hist(self, days:int , fn=None):
         for container in self._raw.spec.template.spec.containers:
             filtro = (
-                f'metric.type = "{metric}" '
+                f'metric.type = "kubernetes.io/container/cpu/core_usage_time" '
                 f'AND resource.labels.cluster_name = "{self.cluster_name}" '
                 f'AND resource.labels.namespace_name = "{self.namespace}" '
                 f'AND resource.labels.container_name = "{container.name}"'
             )
 
             try:
-                values, period = self._get_list_time_series(
-                    metric=metric,
+                values = self._get_list_time_series(
+                    aligner= monitoring_v3.Aggregation.Aligner.ALIGN_RATE,
                     filter=filtro,
-                    project=f"projects/{self.project_id}",
-                    err_data=[self.namespace, container.name],
                     days=days,
                 )
 
-                yield MetricHistory(
-                                deployment=self.name,
-                                metric=metric,
-                                container=container.name,
-                                values=values,
-                                period=10,
-                            )
+                if fn is not None:
+                    yield fn(values)
+                
+                else:
+                    yield MetricHistory(
+                                    deployment=self.name,
+                                    metric="kubernetes.io/container/cpu/core_usage_time",
+                                    container=container.name,
+                                    values=values,
+                                    period=10,
+                                )
             
             except Exception as e:
-                logger.error(f"Error al obtener el historial de {container.name}: {e}")
+                logger.error(f"Error al obtener el historial de {container.name} en cpu: {e}")
                 yield MetricHistory(
                                 deployment=self.name,
-                                metric=metric,
+                                metric="kubernetes.io/container/cpu/core_usage_time",
                                 container=container.name,
                                 values=None,
                                 period=10,
                             )
     
-    def _get_list_time_series(self, metric: str, filter: str,
-                    days=0):
+    def get_memory_hist(self, days:int , fn=None):
+        for container in self._raw.spec.template.spec.containers:
+            filtro = (
+                f'metric.type = "kubernetes.io/container/memory/used_bytes" '
+                f'AND resource.labels.cluster_name = "{self.cluster_name}" '
+                f'AND resource.labels.namespace_name = "{self.namespace}" '
+                f'AND resource.labels.container_name = "{container.name}"'
+            )
+
+            try:
+                values = self._get_list_time_series(
+                    aligner= monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+                    filter=filtro,
+                    days=days,
+                )
+
+                if fn is not None:
+                    yield fn(values)
+                
+                else:
+                    yield MetricHistory(
+                                    deployment=self.name,
+                                    metric="kubernetes.io/container/memory/used_bytes",
+                                    container=container.name,
+                                    values=values,
+                                    period=10,
+                                )
+            
+            except Exception as e:
+                logger.error(f"Error al obtener el historial de {container.name} en memoria: {e}")
+                yield MetricHistory(
+                                deployment=self.name,
+                                metric="kubernetes.io/container/memory/used_bytes",
+                                container=container.name,
+                                values=None,
+                                period=10,
+                            )
+    
+    def _get_list_time_series(self, aligner:monitoring_v3.Aggregation.Aligner, 
+                              filter: str, days=30):
         client = Clients.monitoring()
 
         end = datetime.now(timezone.utc)
@@ -506,12 +546,6 @@ class Deployment:
         interval = monitoring_v3.TimeInterval(
             start_time={"seconds": int(start.timestamp())},
             end_time={"seconds": int(end.timestamp())},
-        )
-
-        aligner = (
-            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
-            if "cpu" in metric
-            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
         )
 
         aggregation = monitoring_v3.Aggregation(
@@ -534,9 +568,9 @@ class Deployment:
                 values.extend(p.value.double_value for p in serie.points)
         except Exception as e:
             logger.exception(f"Metrics error: {e}")
+            return None
 
         return values
-
     
     def __repr__(self):
         return (f"Deployment("
