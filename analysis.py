@@ -13,6 +13,7 @@ CPU_MIN_REQUEST = 100
 CPU_MIN_LIMIT = 300
 MEMORY_MIN_REQUEST = None
 MEMORY_MIN_LIMIT = None
+RESOURCES_INFLATION = 1.35
 
 class Analisys:
     def __init__(self , project:str|Explorador):
@@ -174,9 +175,9 @@ class Analisys:
             fn = Analisys.resume_stat
 
         try:
-            cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=fn)
+            cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=Analisys.cpu_suggestion)
             memory_stat , memory_request , memory_limit = deployment.get_memory_hist(days=days , rate=rate , fn=fn)
-
+            print(deployment.name , cpu_stat , cpu_request , cpu_limit)
             sugestion = pd.DataFrame({
                 "namespace" : deployment.namespace,
                 "static_cpu" : cpu_stat,
@@ -188,14 +189,22 @@ class Analisys:
                 },index=[deployment.name])
                 
             sugestion.index.name = "deployment"
+            logger.info(f"Sugerencias de {deployment.name} fueron generadas")
             return sugestion
         
         except Exception as e:
             logger.error(f"Error al generar las sugerencias de {deployment.name}")
+            raise
 
     #------------- Proceso de valores de CPU -------------#
-    def _cpu_clean(df:pd.DataFrame) -> float|None:
-        pass
+    def cpu_suggestion(df:pd.DataFrame) -> float|None:
+        values = df.iloc[:,0].round(1)
+        filtered = values[values >= 0.1]
+        ref = filtered.quantile(0.7) * 1.15 # Le damos un 15% de tolerancia
+        request = ref * RESOURCES_INFLATION
+        limit = max(ref * 2.5 , values.quantile(0.99) * RESOURCES_INFLATION)
+
+        return ref , request , limit
 
     #------------- Calculos de valor estacionario -------------#
     def resume_stat(df:pd.DataFrame) -> float | None:
@@ -220,8 +229,8 @@ class Analisys:
             precision=4,
         )
 
-        request = stat * 1.4
-        limit = max(stat * 2.5 , df.iloc[:,0].quantile(0.999))
+        request = stat * RESOURCES_INFLATION
+        limit = max(stat * 2.5 , df.iloc[:,0].quantile(0.999) * RESOURCES_INFLATION)
 
         return stat , request , limit
 
@@ -253,8 +262,8 @@ class Analisys:
         # Se recomienda en caso de histogramas grandes
         values = df.iloc[:,0]
         static = values.resample("10D").apply(stat_).max()
-        request = static * 1.4
-        limit = max(static * 2.5 , values.quantile(0.99))
+        request = static * RESOURCES_INFLATION
+        limit = max(static * 2.5 , values.quantile(0.99) * RESOURCES_INFLATION)
 
         return static , request , limit
 

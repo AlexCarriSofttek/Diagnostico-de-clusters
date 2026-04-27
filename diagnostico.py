@@ -5,6 +5,7 @@ from pandas import DataFrame
 from explorador import Explorador
 from analysis import Analisys
 # Pendientes
+# - Validar la conexion de Kubernetes y la de Proyecto (Pueden funcionar indivualmente pero no deberian)
 # - Agregar limpiar los NaN de los historiales
 # - Asegurar conexion entre constructor y ambiente
 # - Considerar el CPU en arranque. 
@@ -21,9 +22,10 @@ from analysis import Analisys
     
 
 if __name__ == "__main__":
-    project_id = "cpl-ec-gcobranza-qa-18032025"
+    project_id = "cpl-ec-gcobranza-dev-08082024"
 
     a = Analisys(project=project_id)
-    a.limits_requests_format(days=30 , rate="1m") # Generar la tabla de sugerencias
-
+    recomendaciones = a.limits_requests_format(days=1 , rate="1m")
+    recomendaciones.loc[recomendaciones.index[0], 'Aprovado (T/F)'] = True
+    print(recomendaciones)
         

@@ -2,10 +2,11 @@ import logging , re , math
 from log_config import setup_logging
 from kubernetes.client import models
 from kubernetes import client, config
-from datetime import datetime, timezone, timedelta , date
+from datetime import datetime, timezone, timedelta 
 from google.cloud.container_v1 import Cluster as Cluster_V1
-from google.cloud import container_v1 , monitoring_v3 ,resourcemanager_v3 as resource_manager
-from google.api_core.exceptions import InvalidArgument
+from kubernetes.client.exceptions import ApiException
+from google.cloud import container_v1 , monitoring_v3 , resourcemanager_v3
+from google.api_core.exceptions import InvalidArgument , GoogleAPICallError, NotFound
 from pandas import DataFrame , to_datetime
 from dataclasses import dataclass
 from typing import List
@@ -89,31 +90,38 @@ class Project:
     def __init__(self, project_id: str):
         self.configurar_cliente_kubernetes()
         try:
-            self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
-            self.name = self._raw.display_name
-            logger.info(f"{project_id} cargado correctamente")
+            self._raw = resourcemanager_v3.ProjectsClient().get_project(name=f"projects/{project_id}")
 
-        except Exception as e:
-            logger.critical(f"Error cargando proyecto {project_id}: {e}")
+        except (NotFound , GoogleAPICallError) as e:
+            logger.critical(
+                f"Error cargando proyecto {project_id}: {e}",
+                exc_info=True)
             raise RuntimeError(f"No se pudo cargar el proyecto {project_id}") from e
 
-        self.id = self._raw.project_id
-        self.clusters: list[Cluster] | None = None
+        else:
+            self.name = self._raw.display_name
+            logger.info(f"{project_id} cargado correctamente")
+            self.id = self._raw.project_id
+
+        finally:
+            self.clusters: list[Cluster] | None = None
 
     def load_clusters(self):
+        client = container_v1.ClusterManagerClient()
         try:
-            if self.clusters is not None:
-                return
-
-            client = container_v1.ClusterManagerClient()
             response = client.list_clusters(
                 parent=f"projects/{self.id}/locations/-"
             )
+        except GoogleAPICallError as e:
+            logger.error(
+                f"Error cargando clusters en {self.name}: {e}",
+                exc_info=True)
+            raise
+        
+        else:
             self.clusters = [
                 Cluster(c, self.id) for c in response.clusters
             ]
-        except Exception as e:
-            logger.error(f"Error cargando clusters en {self.name}: {e}")
 
     def configurar_cliente_kubernetes(self):
         try:
@@ -123,6 +131,7 @@ class Project:
                 config.load_kube_config()
             except Exception as e:
                 logger.critical(f"Error creando el cliente de Kubernetes: {e}")
+                raise
     
     def __repr__(self):
         return (
@@ -144,18 +153,14 @@ class Project:
 
 class Cluster:
     def __init__(self, raw:Cluster_V1, project_id: str):
-        try: 
-            self._raw = raw
-            self.name = raw.name
-            self.location = raw.location
-            self.status = raw.status.name
-            self.project_id = project_id
-            self.namespaces: list[Namespace] | None = None
-            logger.info(f"Cluster {self.name} cargado correctamente")
-
-        except Exception as e:
-            logger.error(f"Error cargando cluster {e}")
-
+        self._raw = raw
+        self.name = raw.name
+        self.location = raw.location
+        self.status = raw.status.name
+        self.project_id = project_id
+        self.namespaces: list[Namespace] | None = None
+        logger.info(f"Cluster {self.name} cargado correctamente")
+        
     def load_namespaces(self):
         try:
             if self.namespaces is not None:
@@ -167,8 +172,9 @@ class Cluster:
                 Namespace(ns, self.project_id, self.name , self.location)
                 for ns in response.items
             ]
-        except Exception as e:
+        except ApiException as e:
             logger.error(f"Error cargando namespaces en {self.name}: {e}")
+            raise
 
     def __repr__(self):
         return (
@@ -190,17 +196,13 @@ class Cluster:
 
 class Namespace:
     def __init__(self, raw: models.V1Namespace, project_id, cluster_name , location):
-        try:
-            self._raw = raw
-            self.name = raw.metadata.name
-            self.status = raw.status.phase
-            self.project_id = project_id
-            self.cluster_name = cluster_name
-            self.location = location
-            self.deployments: list[Deployment] | None = None
-
-        except Exception as e:
-            logger.error(f"Error cargando namespace: {e}")
+        self._raw = raw
+        self.name = raw.metadata.name
+        self.status = raw.status.phase
+        self.project_id = project_id
+        self.cluster_name = cluster_name
+        self.location = location
+        self.deployments: list[Deployment] | None = None
 
     def load_deployments(self):
         try:
@@ -214,7 +216,7 @@ class Namespace:
                 for d in response.items
             ]
         
-        except Exception as e:
+        except ApiException as e:
             logger.error(f"Error cargando deployments en {self.name}: {e}")
 
     def __repr__(self):
@@ -295,7 +297,10 @@ class Deployment:
             | group_by [],
                 [value_used_bytes_mean_aggregate: aggregate(value_used_bytes_mean)]
             """
-            rows.extend(self._time_series_query(query=query , metric=metric))
+            result = self._time_series_query(query=query , metric=metric)
+
+            if result:
+                rows.extend(result)
 
         df = DataFrame(rows)
 
@@ -312,35 +317,16 @@ class Deployment:
         df["time_delta_seconds"] = (
             df.index - df.index[0]
         ).total_seconds()
-
         
-        # Nombre de la primera columna
-        first_col = df.columns[0]
-
-        # Filtrar filas con None o NaN en la primera columna
-        nan_df = df[df[first_col].isna()]
-
-        if not nan_df.empty:
-            from random import randint
-            rnd = randint(1000, 999999)
-            filename = f"na_{rnd}.csv"
-            nan_df.to_csv(filename, index=True)
-            print(f"[DEBUG] CSV generado: {filename}")
+        if fn is not None:
+            return fn(df)
         
-        try:
-            if fn is not None:
-                return fn(df)
-            
-            else:
-                return History_Result(
-                deployment= self.name,
-                metric= metric,
-                df= df
-                ) 
-            
-        except Exception as e:
-            logger.error(f"Error en historial {self.name}:used_bytes {e}")
-            return None
+        else:
+            return History_Result(
+            deployment= self.name,
+            metric= metric,
+            df= df
+            ) 
 
     def get_cpu_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/cpu/core_usage_time"
@@ -355,14 +341,17 @@ class Deployment:
                 && resource.namespace_name == '{self.namespace}'
                 && metadata.system_labels.top_level_controller_name == '{self.name}'
                 && metadata.system_labels.top_level_controller_type == 'Deployment'
-            | align rate(1m)
+            | align rate({rate})
             | every {rate}
             | within {interval[0]} {f", {interval[1]}" if interval[1] != "0s" else ""}
             | group_by [],
                 [value_core_usage_time_aggregate: aggregate(value.core_usage_time)]
             """
 
-            rows.extend(self._time_series_query(query=query , metric=metric))
+            result = self._time_series_query(query=query , metric=metric)
+            print(len(result))
+            if result:
+                rows.extend(result)
 
         df = DataFrame(rows)
 
@@ -380,21 +369,16 @@ class Deployment:
             df.index - df.index[0]
         ).total_seconds()
 
-        try:
-            if fn is not None:
-                return fn(df)
+        if fn is not None:
+            return fn(df)
+        
+        else:
+            return History_Result(
+            deployment= self.name,
+            metric= metric,
+            df= df
+            )
             
-            else:
-                return History_Result(
-                deployment= self.name,
-                metric= metric,
-                df= df
-                )
-            
-        except Exception as e:
-            logger.error(f"Error en historial {self.name}:core_usage_time")
-            return None
-
     def _time_series_query(self , query , metric:str):
         metric = metric.split("/")[-1]
         client = Clients.ts_query()
@@ -413,16 +397,19 @@ class Deployment:
                         "time" : points.time_interval.end_time,
                         metric : points.values[0].double_value
                     })
-            
+            #logger.info(f"Historial de {metric} en {self.name} extraido")
             return rows
 
-        except Exception as e:
-            logger.error(f"Error en time_series {self.name} {metric}: {e}")
-            return None
-        
-        except InvalidArgument as e:
-            logger.exception(f"Excediste el numero de muestras en {self.name}:{metric}")
-            return None   
+        except InvalidArgument:
+            logger.exception(
+                f"Excediste el número de muestras en {self.name}:{metric}"
+            )
+            return []
+        except GoogleAPICallError:
+            logger.exception(
+                f"Error en time_series {self.name} {metric}"
+            )
+            return []
 
     def _parse_interval(self , days:int , interval: str) -> list[str]:
         chunk_size =  99999
@@ -460,7 +447,7 @@ class Deployment:
         return segments 
 
     #------------- Funciones en base a la API moderna-------------#
-    def get_cpu_hist(self, days:int , fn=None):
+    def get_cpu_hist_a(self, days:int , fn=None):
         for container in self._raw.spec.template.spec.containers:
             filtro = (
                 f'metric.type = "kubernetes.io/container/cpu/core_usage_time" '
@@ -498,7 +485,7 @@ class Deployment:
                                 period=10,
                             )
     
-    def get_memory_hist(self, days:int , fn=None):
+    def get_memory_hist_a(self, days:int , fn=None):
         for container in self._raw.spec.template.spec.containers:
             filtro = (
                 f'metric.type = "kubernetes.io/container/memory/used_bytes" '
@@ -566,7 +553,7 @@ class Deployment:
         try:
             for serie in client.list_time_series(request=request):
                 values.extend(p.value.double_value for p in serie.points)
-        except Exception as e:
+        except GoogleAPICallError as e:
             logger.exception(f"Metrics error: {e}")
             return None
 
