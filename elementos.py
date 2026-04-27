@@ -16,11 +16,21 @@ logger.info("Inicio del proceso")
 
 # Corregir el acceso a los proyectos
 
+#region Utils
 @dataclass(frozen=True)
 class History_Result:
     deployment: str
     metric: str
     df: DataFrame
+
+@dataclass(frozen=True)
+class MetricHistory:
+    deployment: str
+    metric: str
+    container: str
+    values: List[float]
+    period: int
+    results = []
 
 class UnitsCon:
     # Clase con conversion de unidades 
@@ -72,19 +82,23 @@ class Clients:
         if cls._monitoring is None:
             cls._monitoring = monitoring_v3.QueryServiceClient()
         return cls._monitoring
+#endregion 
 
+#region Elements
 class Project:
     def __init__(self, project_id: str):
         self.configurar_cliente_kubernetes()
         try:
             self._raw = resource_manager.ProjectsClient().get_project(name=f"projects/{project_id}")
-            self.id = self._raw.project_id
             self.name = self._raw.display_name
-            self.clusters: list[Cluster] | None = None
             logger.info(f"{project_id} cargado correctamente")
 
         except Exception as e:
             logger.critical(f"Error cargando proyecto {project_id}: {e}")
+            raise RuntimeError(f"No se pudo cargar el proyecto {project_id}") from e
+
+        self.id = self._raw.project_id
+        self.clusters: list[Cluster] | None = None
 
     def load_clusters(self):
         try:
@@ -231,6 +245,7 @@ class Deployment:
         self.ready_replicas:int = raw.status.ready_replicas or 0
         self.available_replicas:int = raw.status.available_replicas or 0
 
+    #------------- Acciones de valores actuales -------------#
     def patch_deployment(self , patch_body):
         try:
             Clients.apps_v1().patch_namespaced_deployment(
@@ -242,6 +257,24 @@ class Deployment:
         except Exception as e:
             logger.error(f"Error al aplicar el parche a {self.name}")
     
+    def get_current_resources(self):
+        @dataclass(frozen=True)
+        class CurrentResources:
+            deployment: str
+            container: str
+            limits: dict
+            requests: dict
+
+        for container in self._raw.spec.template.spec.containers:
+            resources = container.resources
+            yield CurrentResources(
+                self.name,
+                container.name,
+                resources.limits,
+                resources.requests,
+            )
+
+    #------------- Funciones en base a Query y MQL-------------#
     def get_memory_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/memory/used_bytes"
         rows = []
@@ -279,6 +312,20 @@ class Deployment:
         df["time_delta_seconds"] = (
             df.index - df.index[0]
         ).total_seconds()
+
+        
+        # Nombre de la primera columna
+        first_col = df.columns[0]
+
+        # Filtrar filas con None o NaN en la primera columna
+        nan_df = df[df[first_col].isna()]
+
+        if not nan_df.empty:
+            from random import randint
+            rnd = randint(1000, 999999)
+            filename = f"na_{rnd}.csv"
+            nan_df.to_csv(filename, index=True)
+            print(f"[DEBUG] CSV generado: {filename}")
         
         try:
             if fn is not None:
@@ -377,111 +424,6 @@ class Deployment:
             logger.exception(f"Excediste el numero de muestras en {self.name}:{metric}")
             return None   
 
-    def iter_history(self, metrics: list[str], days=0):
-        @dataclass(frozen=True)
-        class MetricHistory:
-            deployment: str
-            metric: str
-            container: str
-            values: List[float]
-            period: int
-            results = []
-
-        for metric in metrics:
-            for container in self._raw.spec.template.spec.containers:
-                filtro = (
-                    f'metric.type = "{metric}" '
-                    f'AND resource.labels.cluster_name = "{self.cluster_name}" '
-                    f'AND resource.labels.namespace_name = "{self.namespace}" '
-                    f'AND resource.labels.container_name = "{container.name}"'
-                )
-
-                try:
-                    values, period = self.get_history(
-                        metric=metric,
-                        filter=filtro,
-                        project=f"projects/{self.project_id}",
-                        err_data=[self.namespace, container.name],
-                        days=days,
-                    )
-
-                    yield MetricHistory(
-                                    deployment=self.name,
-                                    metric=metric,
-                                    container=container.name,
-                                    values=values,
-                                    period=period,
-                                )
-                
-                except Exception as e:
-                    logger.error(f"Error al obtener el historial de {container.name}")
-                    yield MetricHistory(
-                                    deployment=self.name,
-                                    metric=metric,
-                                    container=container.name,
-                                    values=None,
-                                    period=None,
-                                )
-
-    def iter_current_lr(self):
-        @dataclass(frozen=True)
-        class CurrentResources:
-            deployment: str
-            container: str
-            limits: dict
-            requests: dict
-
-        for container in self._raw.spec.template.spec.containers:
-            resources = container.resources
-            yield CurrentResources(
-                self.name,
-                container.name,
-                resources.limits,
-                resources.requests,
-            )
-    
-    def get_history(self, metric: str, filter: str,
-                    project: str, err_data: list, *,
-                    hours=0, days=0, weeks=0, period=10,):
-        client = Clients.monitoring()
-
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(hours=hours, days=days, weeks=weeks)
-
-        interval = monitoring_v3.TimeInterval(
-            start_time={"seconds": int(start.timestamp())},
-            end_time={"seconds": int(end.timestamp())},
-        )
-
-        aligner = (
-            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
-            if "cpu" in metric
-            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
-        )
-
-        aggregation = monitoring_v3.Aggregation(
-            alignment_period={"seconds": period},
-            per_series_aligner=aligner,
-            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX,
-        )
-
-        request = {
-            "name": project,
-            "filter": filter,
-            "interval": interval,
-            "aggregation": aggregation,
-        }
-
-        values = []
-
-        try:
-            for serie in client.list_time_series(request=request):
-                values.extend(p.value.double_value for p in serie.points)
-        except Exception:
-            logger.exception(f"Metrics error: {'/'.join(err_data)}")
-
-        return values, period
-
     def _parse_interval(self , days:int , interval: str) -> list[str]:
         chunk_size =  99999
         UNITS_IN_SECONDS = {
@@ -517,6 +459,85 @@ class Deployment:
 
         return segments 
 
+    #------------- Funciones en base a la API moderna-------------#
+    def get_history(self, metric:str, days=0 , fn=None):
+        for container in self._raw.spec.template.spec.containers:
+            filtro = (
+                f'metric.type = "{metric}" '
+                f'AND resource.labels.cluster_name = "{self.cluster_name}" '
+                f'AND resource.labels.namespace_name = "{self.namespace}" '
+                f'AND resource.labels.container_name = "{container.name}"'
+            )
+
+            try:
+                values, period = self._get_list_time_series(
+                    metric=metric,
+                    filter=filtro,
+                    project=f"projects/{self.project_id}",
+                    err_data=[self.namespace, container.name],
+                    days=days,
+                )
+
+                yield MetricHistory(
+                                deployment=self.name,
+                                metric=metric,
+                                container=container.name,
+                                values=values,
+                                period=10,
+                            )
+            
+            except Exception as e:
+                logger.error(f"Error al obtener el historial de {container.name}: {e}")
+                yield MetricHistory(
+                                deployment=self.name,
+                                metric=metric,
+                                container=container.name,
+                                values=None,
+                                period=10,
+                            )
+    
+    def _get_list_time_series(self, metric: str, filter: str,
+                    days=0):
+        client = Clients.monitoring()
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+
+        interval = monitoring_v3.TimeInterval(
+            start_time={"seconds": int(start.timestamp())},
+            end_time={"seconds": int(end.timestamp())},
+        )
+
+        aligner = (
+            monitoring_v3.Aggregation.Aligner.ALIGN_RATE
+            if "cpu" in metric
+            else monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
+        )
+
+        aggregation = monitoring_v3.Aggregation(
+            alignment_period={"seconds": 10},
+            per_series_aligner=aligner,
+            cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MAX,
+        )
+
+        request = {
+            "name": self.project_id,
+            "filter": filter,
+            "interval": interval,
+            "aggregation": aggregation,
+        }
+
+        values = []
+
+        try:
+            for serie in client.list_time_series(request=request):
+                values.extend(p.value.double_value for p in serie.points)
+        except Exception as e:
+            logger.exception(f"Metrics error: {e}")
+
+        return values
+
+    
     def __repr__(self):
         return (f"Deployment("
                 f"name='{self.name}'," 
@@ -576,3 +597,4 @@ class Pod:
             f"  Node: {self.node}\n"
             f"  Restarts: {self.restart_count}"
         )
+#endregion 

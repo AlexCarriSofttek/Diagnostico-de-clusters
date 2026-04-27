@@ -2,7 +2,6 @@ from explorador import Explorador
 from elementos import Deployment , UnitsCon as uc
 from collections import Counter
 from typing import List
-from dataclasses import dataclass
 import pandas as pd
 from datetime import date
 
@@ -18,101 +17,19 @@ MEMORY_MIN_LIMIT = None
 class Analisys:
     def __init__(self , project:str|Explorador):
         if isinstance(project, Explorador):
-            self.explorer = project
+            self.explorer:Explorador = project
 
         elif isinstance(project, str):
-            self.explorer = Explorador(project_id=project)
+            self.explorer:Explorador = Explorador(project_id=project)
 
         else:
             raise TypeError(
                 "Analisys espera un project_id (str) o un Explorador"
             )
         
-        self.file_n_template = f"{self.explorer.project.name}_{date.today()}_"
+        self.file_n_template = f"{self.explorer.project.id}_{date.today()}_"
 
-    def limits_requests_format(self , days=1 , rate="1m"):
-        df = self.get_resources_suggestions(days=days , rate=rate)
-        
-        df["static_cpu"] = df["static_cpu"].apply(uc.cpu2millicores)
-        df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(uc.cpu2millicores)
-        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(uc.cpu2millicores)
-
-        df["recommended_cpu_request"] = df["recommended_cpu_request"].clip(lower=CPU_MIN_REQUEST)
-        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].clip(lower=CPU_MIN_LIMIT)
-
-        df["static_memory"] = df["static_memory"].apply(uc.bytes2mi)
-        df["recommended_memory_request"] = df["recommended_memory_request"].apply(uc.bytes2mi)
-        df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(uc.bytes2mi)
-
-        df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(
-            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
-        )
-
-        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(
-            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
-        )
-
-        df["recommended_memory_request"] = df["recommended_memory_request"].apply(
-            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
-        )
-
-        df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(
-            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
-        )
-  
-        df["Aprovado (T/F)"] = False
-        df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
-
-        # Backup
-        self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
-
-        df.to_csv(f"{self.file_n_template}suggestions.csv")
-
-        return df
-
-    def get_current_resource(self , deployment:Deployment) -> pd.DataFrame:
-        df_resources = pd.DataFrame([
-            {   
-                "deployment": r.deployment,
-                "container": r.container,            
-                "cpu_request": (
-                    r.requests.get("cpu")
-                    if r.requests and isinstance(r.requests, dict)
-                    else "N/A"
-                ),
-                "cpu_limit": (
-                    r.limits.get("cpu")
-                    if r.limits and isinstance(r.limits, dict)
-                    else "N/A"
-                ),
-                "mem_request": (
-                    r.requests.get("memory")
-                    if r.requests and isinstance(r.requests, dict)
-                    else "N/A"
-                ),
-                "mem_limit": (
-                    r.limits.get("memory")
-                    if r.limits and isinstance(r.limits, dict)
-                    else "N/A"
-                )
-            }
-            for r in deployment.iter_current_lr()
-        ]).set_index("deployment")
-
-        return df_resources
-
-    def get_current_resources(self) -> pd.DataFrame:
-        dfs = []
-        try:
-            for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-                dfs.append(self.get_current_resource(deployment=deployment))
-
-            df = pd.concat(dfs).sort_index()
-
-            return df
-        except Exception as e:
-            logger.warning(f"Advertencia cargando los recursos actuales")
-
+    #------------- Valores actuales -------------#
     def export_metrics_json(self, days:int , rate="1m") -> None:
         import json
 
@@ -156,6 +73,99 @@ class Analisys:
                 )
             f.write("\n]")
             print("Json guardado")
+  
+    def get_current_resources(self) -> pd.DataFrame:
+        dfs = []
+        try:
+            for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+                dfs.append(self.get_current_resource(deployment=deployment))
+
+            df = pd.concat(dfs).sort_index()
+
+            return df
+        except Exception as e:
+            logger.warning(f"Advertencia cargando los recursos actuales")
+
+    def get_current_resource(self , deployment:Deployment) -> pd.DataFrame:
+        df_resources = pd.DataFrame([
+            {   
+                "deployment": r.deployment,
+                "container": r.container,            
+                "cpu_request": (
+                    r.requests.get("cpu")
+                    if r.requests and isinstance(r.requests, dict)
+                    else "N/A"
+                ),
+                "cpu_limit": (
+                    r.limits.get("cpu")
+                    if r.limits and isinstance(r.limits, dict)
+                    else "N/A"
+                ),
+                "mem_request": (
+                    r.requests.get("memory")
+                    if r.requests and isinstance(r.requests, dict)
+                    else "N/A"
+                ),
+                "mem_limit": (
+                    r.limits.get("memory")
+                    if r.limits and isinstance(r.limits, dict)
+                    else "N/A"
+                )
+            }
+            for r in deployment.get_current_resources()
+        ]).set_index("deployment")
+
+        return df_resources
+
+    #------------- Recomendaciones de recursos -------------#
+    def limits_requests_format(self , days=1 , rate="1m"):
+        df = self.get_resources_suggestions(days=days , rate=rate)
+        
+        df["static_cpu"] = df["static_cpu"].apply(uc.cpu2millicores)
+        df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(uc.cpu2millicores)
+        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(uc.cpu2millicores)
+
+        df["recommended_cpu_request"] = df["recommended_cpu_request"].clip(lower=CPU_MIN_REQUEST)
+        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].clip(lower=CPU_MIN_LIMIT)
+
+        df["static_memory"] = df["static_memory"].apply(uc.bytes2mi)
+        df["recommended_memory_request"] = df["recommended_memory_request"].apply(uc.bytes2mi)
+        df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(uc.bytes2mi)
+
+        df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(
+            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(
+            lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_memory_request"] = df["recommended_memory_request"].apply(
+            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
+        )
+
+        df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(
+            lambda x: f"{int(x)}Mi" if pd.notnull(x) else "N/A"
+        )
+  
+        df["Aprovado (T/F)"] = False
+        df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
+
+        # Backup
+        self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
+
+        df.to_csv(f"{self.file_n_template}suggestions.csv")
+
+        return df
+
+    def get_resources_suggestions(self , days=30 , rate="30s") -> pd.DataFrame:
+        dfs = []
+        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+            dfs.append(self.mem_cpu_suggestion(deployment=deployment , days=days , rate=rate))
+
+        df = pd.concat(dfs).sort_index()
+
+        return df  
 
     def mem_cpu_suggestion(self , deployment:Deployment , days=30 , rate="30s") -> pd.DataFrame:
         if days > 20:
@@ -183,27 +193,11 @@ class Analisys:
         except Exception as e:
             logger.error(f"Error al generar las sugerencias de {deployment.name}")
 
-    def get_resources_suggestions(self , days=30 , rate="30s") -> pd.DataFrame:
-        dfs = []
-        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-            dfs.append(self.mem_cpu_suggestion(deployment=deployment , days=days , rate=rate))
+    #------------- Proceso de valores de CPU -------------#
+    def _cpu_clean(df:pd.DataFrame) -> float|None:
+        pass
 
-        df = pd.concat(dfs).sort_index()
-
-        return df  
-
-    def stationary_by_duration(values: List[float], period: int,
-                               precision: int = 4) -> float | None:
-        # Encuentra el valor en el que el deployment pasa más tiempo.         
-        if not values:
-            return None
-        durations = Counter()
-        for v in values:
-            durations[round(v, precision)] += period
-
-        # Valor con mayor tiempo acumulado
-        return durations.most_common(1)[0][0]
-
+    #------------- Calculos de valor estacionario -------------#
     def resume_stat(df:pd.DataFrame) -> float | None:
         if df.empty:
                 return None
@@ -264,7 +258,17 @@ class Analisys:
 
         return static , request , limit
 
+    def stationary_by_duration(values: List[float], period: int,
+                               precision: int = 4) -> float | None:
+        # Encuentra el valor en el que el deployment pasa más tiempo.         
+        if not values:
+            return None
+        durations = Counter()
+        for v in values:
+            durations[round(v, precision)] += period
 
+        # Valor con mayor tiempo acumulado
+        return durations.most_common(1)[0][0]
 
 if __name__ == "__main__":
     project_ids = [

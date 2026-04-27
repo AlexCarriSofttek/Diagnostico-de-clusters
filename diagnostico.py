@@ -6,6 +6,7 @@ from explorador import Explorador
 from analysis import Analisys
 # Pendientes
 # - Agregar limpiar los NaN de los historiales
+# - Asegurar conexion entre constructor y ambiente
 # - Considerar el CPU en arranque. 
 # - Agregar el cargar pods
 # - Documentacion 
