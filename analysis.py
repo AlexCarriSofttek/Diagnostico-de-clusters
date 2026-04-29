@@ -73,7 +73,7 @@ class Analisys:
                     } , f , ensure_ascii=False,
                 )
             f.write("\n]")
-            print("Json guardado")
+            logger.info("Json guardado metrics_history.json")
   
     def get_current_resources(self) -> pd.DataFrame:
         dfs = []
@@ -152,12 +152,24 @@ class Analisys:
         df["Aprovado (T/F)"] = False
         df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
 
+        cpu_hc , cpu_dc , cpu_oc = Analisys.tag_counter(df , "nota_cpu")
+        mem_hc , mem_dc , mem_oc = Analisys.tag_counter(df , "nota_memoria")
+
+        resume = (f"Se obtubieron {len(df)} deployments:\n",
+                  f"Generados correctamente cpu:{cpu_oc} memoria:{mem_oc}\n",
+                  f"Datos insuficientes cpu:{cpu_dc} memoria:{mem_dc}\n",
+                  f"Historiales no disponibles cpu:{cpu_hc} memoria:{mem_hc}"
+                  )
+        
+        logger.info(resume)
+        print(resume)
+
         # Backup
         self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
 
         df.to_csv(f"{self.file_n_template}suggestions.csv")
 
-        return df
+        return df 
 
     def get_resources_suggestions(self , days=30 , rate="30s") -> pd.DataFrame:
         dfs = []
@@ -177,15 +189,17 @@ class Analisys:
         try:
             cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=Analisys.cpu_suggestion)
             memory_stat , memory_request , memory_limit = deployment.get_memory_hist(days=days , rate=rate , fn=fn)
-            print(deployment.name , cpu_stat , cpu_request , cpu_limit)
+            
             sugestion = pd.DataFrame({
                 "namespace" : deployment.namespace,
-                "static_cpu" : cpu_stat,
-                "static_memory" : memory_stat,
-                "recommended_cpu_request": cpu_request,
-                "recommended_cpu_limit" : cpu_limit,
-                "recommended_memory_request": memory_request,
-                "recommended_memory_limit" : memory_limit
+                "static_cpu" : cpu_stat if not pd.isna(cpu_stat) else 0,
+                "static_memory" : memory_stat if not pd.isna(memory_stat) else 0,
+                "recommended_cpu_request": cpu_request if not pd.isna(cpu_request) else 0,
+                "recommended_cpu_limit" : cpu_limit if not pd.isna(cpu_limit) else 0,
+                "recommended_memory_request": memory_request if not pd.isna(memory_request) else 0,
+                "recommended_memory_limit" : memory_limit if not pd.isna(memory_limit) else 0,
+                "nota_cpu":Analisys.tag_state(cpu_stat , cpu_request , cpu_limit),
+                "nota_memoria":Analisys.tag_state(memory_stat , memory_request , memory_limit)
                 },index=[deployment.name])
                 
             sugestion.index.name = "deployment"
@@ -196,11 +210,30 @@ class Analisys:
             logger.error(f"Error al generar las sugerencias de {deployment.name}")
             raise
 
+    def tag_state(*valores: float | None) -> str:
+        if any(v is None for v in valores):
+            return "Historial no disponible"
+            
+        if any(pd.isna(v) for v in valores):
+            return "Datos insuficientes"
+        
+        return "Correcto"
+    
+    def tag_counter(df:pd.DataFrame , col:str):
+        hist_n = df[col].str.contains("Historial no disponible").sum()
+        data_n = df[col].str.contains("Datos insuficientes").sum()
+        ok = df[col].str.contains("Correcto").sum()
+
+        return hist_n , data_n , ok
+
     #------------- Proceso de valores de CPU -------------#
     def cpu_suggestion(df:pd.DataFrame) -> float|None:
+        if df.empty:
+            return None , None , None
+        
         values = df.iloc[:,0].round(1)
         filtered = values[values >= 0.1]
-        ref = filtered.quantile(0.7) * 1.15 # Le damos un 15% de tolerancia
+        ref = filtered.quantile(0.7) * 1.05 # Le damos un 5% de tolerancia
         request = ref * RESOURCES_INFLATION
         limit = max(ref * 2.5 , values.quantile(0.99) * RESOURCES_INFLATION)
 
@@ -209,7 +242,7 @@ class Analisys:
     #------------- Calculos de valor estacionario -------------#
     def resume_stat(df:pd.DataFrame) -> float | None:
         if df.empty:
-                return None
+            return None , None , None
         
         period_seconds = (
             df.index.to_series()
@@ -235,6 +268,9 @@ class Analisys:
         return stat , request , limit
 
     def segmented_stat(df:pd.DataFrame) -> float |None:
+        if df.empty:
+            return None , None , None
+        
         def stat_(values:pd.Series):      
             if values.empty:
                     return None
@@ -256,7 +292,6 @@ class Analisys:
                 period=period,
                 precision=4,
             )
-
         # Segmenta en intervalos de 10 días y elige el 
         # valor estatico más grande para referencia
         # Se recomienda en caso de histogramas grandes
@@ -279,14 +314,3 @@ class Analisys:
         # Valor con mayor tiempo acumulado
         return durations.most_common(1)[0][0]
 
-if __name__ == "__main__":
-    project_ids = [
-        "cpl-ssff-cnsulcc-dev-05122025",
-    ]
-
-    for project_id in project_ids:
-        explorador = Explorador(project_id=project_id)
-        analisis = Analisys(explorador)
-        recomendaciones = analisis.limits_requests_format(days=1 , rate="1m")
-        recomendaciones.loc[recomendaciones.index[0], 'Aprovado (T/F)'] = True
-        print(recomendaciones)

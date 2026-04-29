@@ -48,7 +48,7 @@ class UnitsCon:
     def cpu2millicores(cpu):
         if cpu is None or (isinstance(cpu, float) and math.isnan(cpu)):
             return None
-        return int(cpu) * 1000
+        return math.ceil(cpu * 1000)
 
     def mb2mi(mb: float) -> float:
         if mb is None or (isinstance(mb, float) and math.isnan(mb)):
@@ -89,6 +89,12 @@ class Clients:
 class Project:
     def __init__(self, project_id: str):
         self.configurar_cliente_kubernetes()
+        _ , active_context = config.list_kube_config_contexts()
+        
+        if not project_id in active_context['name']:
+            logger.critical((f"El proyecto abierto no coincide con el configurado. Se recomienda volver a abrir y autenticarse"))
+            raise ValueError("El cluster no coincide con el esperado.Se recomienda volver a abrir el proyecto, conectarse al cluster y autenticarse")
+
         try:
             self._raw = resourcemanager_v3.ProjectsClient().get_project(name=f"projects/{project_id}")
 
@@ -305,9 +311,10 @@ class Deployment:
         df = DataFrame(rows)
 
         if df.empty:
+            logger.warning(f"Memory hist {self.name} no regreso datos")
             if fn is not None:
-                return None, None, None
-            return None , None , None
+                return fn(df)
+            return None
         
         df["time"] = to_datetime(df["time"])
 
@@ -349,16 +356,17 @@ class Deployment:
             """
 
             result = self._time_series_query(query=query , metric=metric)
-            print(len(result))
+
             if result:
                 rows.extend(result)
 
         df = DataFrame(rows)
 
         if df.empty:
+            logger.warning(f"CPU hist {self.name} no regreso datos")
             if fn is not None:
-                return None, None, None
-            return None , None , None
+                return fn(df)
+            return None
         
         df["time"] = to_datetime(df["time"])
 
