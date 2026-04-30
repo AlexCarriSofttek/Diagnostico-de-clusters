@@ -15,7 +15,7 @@ MEMORY_MIN_REQUEST = None
 MEMORY_MIN_LIMIT = None
 RESOURCES_INFLATION = 1.35
 
-class Analisys:
+class Metrics:
     def __init__(self , project:str|Explorador):
         if isinstance(project, Explorador):
             self.explorer:Explorador = project
@@ -25,7 +25,7 @@ class Analisys:
 
         else:
             raise TypeError(
-                "Analisys espera un project_id (str) o un Explorador"
+                "Metrics espera un project_id (str) o un Explorador"
             )
         
         self.file_n_template = f"{self.explorer.project.id}_{date.today()}_"
@@ -35,9 +35,9 @@ class Analisys:
         import json
 
         if days > 20:
-            fn = Analisys.segmented_stat
+            fn = Metrics.segmented_stat
         else:
-            fn = Analisys.resume_stat
+            fn = Metrics.resume_stat
 
         with open("metrics_history.json", "w") as f:
             f.write("[\n")
@@ -152,8 +152,8 @@ class Analisys:
         df["Aprovado (T/F)"] = False
         df["Aprovado (T/F)"] = df["Aprovado (T/F)"].astype(bool)
 
-        cpu_hc , cpu_dc , cpu_oc = Analisys.tag_counter(df , "nota_cpu")
-        mem_hc , mem_dc , mem_oc = Analisys.tag_counter(df , "nota_memoria")
+        cpu_hc , cpu_dc , cpu_oc = Metrics.tag_counter(df , "nota_cpu")
+        mem_hc , mem_dc , mem_oc = Metrics.tag_counter(df , "nota_memoria")
 
         resume = (f"Se obtubieron {len(df)} deployments:\n",
                   f"Generados correctamente cpu:{cpu_oc} memoria:{mem_oc}\n",
@@ -182,12 +182,12 @@ class Analisys:
 
     def mem_cpu_suggestion(self , deployment:Deployment , days=30 , rate="30s") -> pd.DataFrame:
         if days > 20:
-            fn = Analisys.segmented_stat
+            fn = Metrics.segmented_stat
         else:
-            fn = Analisys.resume_stat
+            fn = Metrics.resume_stat
 
         try:
-            cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=Analisys.cpu_suggestion)
+            cpu_stat , cpu_request , cpu_limit = deployment.get_cpu_hist(days=days , rate=rate , fn=Metrics.cpu_suggestion)
             memory_stat , memory_request , memory_limit = deployment.get_memory_hist(days=days , rate=rate , fn=fn)
             
             sugestion = pd.DataFrame({
@@ -198,8 +198,8 @@ class Analisys:
                 "recommended_cpu_limit" : cpu_limit if not pd.isna(cpu_limit) else 0,
                 "recommended_memory_request": memory_request if not pd.isna(memory_request) else 0,
                 "recommended_memory_limit" : memory_limit if not pd.isna(memory_limit) else 0,
-                "nota_cpu":Analisys.tag_state(cpu_stat , cpu_request , cpu_limit),
-                "nota_memoria":Analisys.tag_state(memory_stat , memory_request , memory_limit)
+                "nota_cpu":Metrics.tag_state(cpu_stat , cpu_request , cpu_limit),
+                "nota_memoria":Metrics.tag_state(memory_stat , memory_request , memory_limit)
                 },index=[deployment.name])
                 
             sugestion.index.name = "deployment"
@@ -256,7 +256,7 @@ class Analisys:
 
         period = int(period_seconds)
 
-        stat = Analisys.stationary_by_duration(
+        stat = Metrics.stationary_by_duration(
             values=df.iloc[:,0].to_list(),
             period=period,
             precision=4,
@@ -287,7 +287,7 @@ class Analisys:
 
             period = int(period_seconds)
 
-            return Analisys.stationary_by_duration(
+            return Metrics.stationary_by_duration(
                 values=values.to_list(),
                 period=period,
                 precision=4,
@@ -314,3 +314,17 @@ class Analisys:
         # Valor con mayor tiempo acumulado
         return durations.most_common(1)[0][0]
 
+class Inventario:
+    def __init__(self , project:str|Explorador):
+        if isinstance(project, Explorador):
+            self.explorer:Explorador = project
+
+        elif isinstance(project, str):
+            self.explorer:Explorador = Explorador(project_id=project)
+
+        else:
+            raise TypeError(
+                "Metrics espera un project_id (str) o un Explorador"
+            )
+        
+        self.file_n_template = f"{self.explorer.project.id}_{date.today()}_"

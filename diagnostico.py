@@ -3,11 +3,11 @@
 # hacer con la herramienta
 from pandas import DataFrame
 from explorador import Explorador
-from analysis import Analisys
+from analysis import Metrics
 # Pendientes
-# - Agregar el cargar pods
 # - Documentacion 
 # - Funciones en el aplicador para corregir si el deployment no tiene suficientes recursos
+# - Funcion para quitar limites, reiniciar el deployment, y medir el arranque de CPU y Memoria
 
 # Inventarios 
 # - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
@@ -17,7 +17,7 @@ from analysis import Analisys
 if __name__ == "__main__":
     project_id = "cpl-ec-gcobranza-dev-08082024"
 
-    a = Analisys(project=project_id)
+    a = Metrics(project=project_id)
     recomendaciones = a.limits_requests_format(days=1 , rate="1m")
 
         
