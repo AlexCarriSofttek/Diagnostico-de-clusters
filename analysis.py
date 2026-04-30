@@ -129,7 +129,7 @@ class Analisys:
         df["recommended_cpu_request"] = df["recommended_cpu_request"].clip(lower=CPU_MIN_REQUEST)
         df["recommended_cpu_limit"] = df["recommended_cpu_limit"].clip(lower=CPU_MIN_LIMIT)
 
-        df["static_memory"] = df["static_memory"].apply(uc.bytes2mi)
+        df["static_memory"] = df["static_memory"].apply(uc.bytes2mi).round(2)
         df["recommended_memory_request"] = df["recommended_memory_request"].apply(uc.bytes2mi)
         df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(uc.bytes2mi)
 

@@ -15,7 +15,7 @@ def setup_logging():
 
     handler = logging.FileHandler(
         log_file,
-        mode="a",
+        mode="w",
         encoding="utf-8"
     )
 

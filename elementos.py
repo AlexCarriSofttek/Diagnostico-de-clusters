@@ -90,7 +90,7 @@ class Project:
     def __init__(self, project_id: str):
         self.configurar_cliente_kubernetes()
         _ , active_context = config.list_kube_config_contexts()
-        
+
         if not project_id in active_context['name']:
             logger.critical((f"El proyecto abierto no coincide con el configurado. Se recomienda volver a abrir y autenticarse"))
             raise ValueError("El cluster no coincide con el esperado.Se recomienda volver a abrir el proyecto, conectarse al cluster y autenticarse")
@@ -282,6 +282,66 @@ class Deployment:
                 resources.requests,
             )
 
+    def get_pods(self) -> list["Pod"]:
+        core = Clients.core_v1()
+
+        selector = self._raw.spec.selector.match_labels
+
+        if not selector:
+            logger.warning(f"Selector no encontrar al obtener pods de {self.name}")
+            return []
+
+        # convertir dict → label selector string
+        label_selector = ",".join([f"{k}={v}" for k, v in selector.items()])
+
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=label_selector
+            )
+
+            return [Pod(p) for p in pods.items]
+
+        except ApiException as e:
+            logger.error(f"Error obteniendo pods de {self.name}: {e}")
+            return []
+
+    def is_healthy(self) -> bool:
+        _deployment = Clients.apps_v1().read_namespaced_deployment(self.name , self.namespace)
+
+        desired = _deployment.spec.replicas
+        available = _deployment.status.available_replicas or 0
+        updated = _deployment.status.updated_replicas or 0
+        ready = _deployment.status.ready_replicas or 0
+
+        return (
+            available == desired and
+            updated == desired and
+            ready == desired
+        )
+    
+    def _availability(self):
+        _deployment = Clients.apps_v1().read_namespaced_deployment(self.name , self.namespace)
+
+        for cond in _deployment.status.conditions or []:
+            if cond.type == 'Available' and not bool(cond.status):
+                # Does not have minimun availability 
+                return False 
+            
+        return True
+ 
+    def pods_health (self) -> list | None:
+        if self.desired_replicas == 0: return None
+        n_healthy = []
+        for pod in self.get_pods():
+            if not pod.is_healthy():
+                n_healthy.append([pod.name , pod.phase])
+        
+        return n_healthy if n_healthy else None
+    
+    def health(self) -> list | None:
+        if not self.is_healthy():
+            return self.pods_health()
     #------------- Funciones en base a Query y MQL-------------#
     def get_memory_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/memory/used_bytes"
@@ -608,6 +668,11 @@ class Pod:
         self.restart_count: int = sum(
             cs.restart_count for cs in (pod.status.container_statuses or [])
         )
+
+    def is_healthy(self) -> bool:    
+        if self.phase != "Running" or self.restart_count > 0:
+            return False
+        return True
 
     def __repr__(self) -> str:
         return (
