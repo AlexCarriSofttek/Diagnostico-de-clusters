@@ -10,6 +10,7 @@ from google.api_core.exceptions import InvalidArgument , GoogleAPICallError, Not
 from pandas import DataFrame , to_datetime
 from dataclasses import dataclass
 from typing import List
+from time import sleep, time
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -253,7 +254,61 @@ class Deployment:
         self.ready_replicas:int = raw.status.ready_replicas or 0
         self.available_replicas:int = raw.status.available_replicas or 0
 
-    #------------- Acciones de valores actuales -------------#
+    #------------- Acciones actuales -------------#
+    def restart(self):   
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        patch = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "kubectl.kubernetes.io/restartedAt": now
+                        }
+                    }
+                }
+            }
+        }
+
+        self.patch_deployment(patch_body=patch)
+
+    def wait_verification(self , timeout=300 , interval=5) -> None:
+        start = time()
+        sleep(2)
+
+        while True:
+            try:
+                if self.desired_replicas == 0:
+                    logger.info(f"{self.name}: no tiene replicas planeadas")
+                    return True
+
+                pods = self.get_pods()
+
+                if not pods:
+                    logger.info(f"{self.name}: esperando creación de pods...")
+                    pass
+
+                else:
+                    phases = [pod.phase for pod in pods]
+
+                    if any(pod.phase == "Pending" for pod in pods):
+                        pass
+
+                    elif all(pod.phase == "Running" for pod in pods):
+                        return True
+                    
+                    elif any(pod.phase == "Failed" for pod in pods):
+                        return False
+
+                if time() - start > timeout:
+                    logger.error(f"{self.name}: timeout esperando estado saludable")
+                    return False
+
+                sleep(interval)
+
+            except Exception as e:
+                logger.error(f"Error verificando {self.name}: {e}")
+                return False
+    
     def patch_deployment(self , patch_body):
         try:
             Clients.apps_v1().patch_namespaced_deployment(
@@ -590,13 +645,13 @@ class Deployment:
                                 values=None,
                                 period=10,
                             )
-    
+
     def _get_list_time_series(self, aligner:monitoring_v3.Aggregation.Aligner, 
-                              filter: str, days=30):
+                              filter: str, days=1 , minutes=0):
         client = Clients.monitoring()
 
         end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
+        start = end - timedelta(days=days , minutes=minutes)
 
         interval = monitoring_v3.TimeInterval(
             start_time={"seconds": int(start.timestamp())},

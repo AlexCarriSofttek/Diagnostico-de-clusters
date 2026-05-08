@@ -5,6 +5,7 @@ from pandas import DataFrame
 from explorador import Explorador
 from analysis import Metrics
 # Pendientes
+# - Cambio de nombre de log con base al run
 # - Documentacion 
 # - Funciones en el aplicador para corregir si el deployment no tiene suficientes recursos
 # - Funcion para quitar limites, reiniciar el deployment, y medir el arranque de CPU y Memoria

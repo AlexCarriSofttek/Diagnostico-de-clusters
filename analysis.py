@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 # Minimos para requests y limites
 CPU_MIN_REQUEST = 100
 CPU_MIN_LIMIT = 300
-MEMORY_MIN_REQUEST = None
-MEMORY_MIN_LIMIT = None
+MEMORY_MIN_REQUEST = 90
+MEMORY_MIN_LIMIT = 180
 RESOURCES_INFLATION = 1.35
 
 class Metrics:
@@ -155,18 +155,18 @@ class Metrics:
         cpu_hc , cpu_dc , cpu_oc = Metrics.tag_counter(df , "nota_cpu")
         mem_hc , mem_dc , mem_oc = Metrics.tag_counter(df , "nota_memoria")
 
-        resume = (f"Se obtubieron {len(df)} deployments:\n",
+        resume =  (
+                  f"Se obtubieron {len(df)} deployments:\n",
                   f"Generados correctamente cpu:{cpu_oc} memoria:{mem_oc}\n",
                   f"Datos insuficientes cpu:{cpu_dc} memoria:{mem_dc}\n",
                   f"Historiales no disponibles cpu:{cpu_hc} memoria:{mem_hc}"
                   )
         
-        logger.info(resume)
-        print(resume)
+        logger.info(0); logger.info(1); logger.info(2); logger.info(3)
 
         # Backup
         self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
-
+        # Suggestions
         df.to_csv(f"{self.file_n_template}suggestions.csv")
 
         return df 
@@ -199,7 +199,8 @@ class Metrics:
                 "recommended_memory_request": memory_request if not pd.isna(memory_request) else 0,
                 "recommended_memory_limit" : memory_limit if not pd.isna(memory_limit) else 0,
                 "nota_cpu":Metrics.tag_state(cpu_stat , cpu_request , cpu_limit),
-                "nota_memoria":Metrics.tag_state(memory_stat , memory_request , memory_limit)
+                "nota_memoria":Metrics.tag_state(memory_stat , memory_request , memory_limit),
+                "Habilitado": True if deployment.desired_replicas > 0 else False
                 },index=[deployment.name])
                 
             sugestion.index.name = "deployment"
@@ -313,6 +314,10 @@ class Metrics:
 
         # Valor con mayor tiempo acumulado
         return durations.most_common(1)[0][0]
+
+    #------------- Calculos de valor maximo -------------#
+    def max_test(df:pd.DataFrame) -> float|None:
+        pass        
 
 class Inventario:
     def __init__(self , project:str|Explorador):
