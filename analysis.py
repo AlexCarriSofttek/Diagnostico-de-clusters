@@ -119,19 +119,24 @@ class Metrics:
         return df_resources
 
     #------------- Recomendaciones de recursos -------------#
-    def limits_requests_format(self , days=1 , rate="1m"):
+    def limits_requests_format(self , days=1 , rate="1m" , min_cpu=True , min_mem=True):
         df = self.get_resources_suggestions(days=days , rate=rate)
         
         df["static_cpu"] = df["static_cpu"].apply(uc.cpu2millicores)
         df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(uc.cpu2millicores)
         df["recommended_cpu_limit"] = df["recommended_cpu_limit"].apply(uc.cpu2millicores)
 
-        df["recommended_cpu_request"] = df["recommended_cpu_request"].clip(lower=CPU_MIN_REQUEST)
-        df["recommended_cpu_limit"] = df["recommended_cpu_limit"].clip(lower=CPU_MIN_LIMIT)
+        if min_cpu:
+            df["recommended_cpu_request"] = df["recommended_cpu_request"].clip(lower=CPU_MIN_REQUEST)
+            df["recommended_cpu_limit"] = df["recommended_cpu_limit"].clip(lower=CPU_MIN_LIMIT)
 
         df["static_memory"] = df["static_memory"].apply(uc.bytes2mi).round(2)
         df["recommended_memory_request"] = df["recommended_memory_request"].apply(uc.bytes2mi)
         df["recommended_memory_limit"] = df["recommended_memory_limit"].apply(uc.bytes2mi)
+
+        if min_mem:
+            df["recommended_memory_request"] = df["recommended_memory_request"].clip(lower=MEMORY_MIN_REQUEST)
+            df["recommended_memory_limit"] = df["recommended_memory_limit"].clip(lower=MEMORY_MIN_LIMIT)
 
         df["recommended_cpu_request"] = df["recommended_cpu_request"].apply(
             lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
@@ -162,7 +167,8 @@ class Metrics:
                   f"Historiales no disponibles cpu:{cpu_hc} memoria:{mem_hc}"
                   )
         
-        logger.info(0); logger.info(1); logger.info(2); logger.info(3)
+        logger.info(resume[0]); logger.info(resume[1])
+        logger.info(resume[2]); logger.info(resume[3])
 
         # Backup
         self.get_current_resources().to_csv(f"{self.file_n_template}back_up.csv")
@@ -200,7 +206,7 @@ class Metrics:
                 "recommended_memory_limit" : memory_limit if not pd.isna(memory_limit) else 0,
                 "nota_cpu":Metrics.tag_state(cpu_stat , cpu_request , cpu_limit),
                 "nota_memoria":Metrics.tag_state(memory_stat , memory_request , memory_limit),
-                "Habilitado": True if deployment.desired_replicas > 0 else False
+                "habilitado": True if deployment.desired_replicas > 0 else False
                 },index=[deployment.name])
                 
             sugestion.index.name = "deployment"
@@ -233,7 +239,7 @@ class Metrics:
             return None , None , None
         
         values = df.iloc[:,0].round(1)
-        filtered = values[values >= 0.1]
+        filtered = values[values >= 0.1] # tomamos los que son mayores a 100m 
         ref = filtered.quantile(0.7) * 1.05 # Le damos un 5% de tolerancia
         request = ref * RESOURCES_INFLATION
         limit = max(ref * 2.5 , values.quantile(0.99) * RESOURCES_INFLATION)
@@ -317,7 +323,35 @@ class Metrics:
 
     #------------- Calculos de valor maximo -------------#
     def max_test(df:pd.DataFrame) -> float|None:
-        pass        
+        if df.empty:
+            return None , None , None
+
+        m = df.iloc[:,0].max()
+        request = m * RESOURCES_INFLATION
+        limit = max(m * 2.5 , request * RESOURCES_INFLATION)
+
+        return m , request , limit
+
+    def max_parsed_c(df:pd.DataFrame) -> str|None:
+        def string_c(x):
+            f"{int(x)}m" if pd.notnull(x) else "N/A"
+        # Usa max_test pero regresa los datos en milicores
+        s , r , l = Metrics.max_test(df)
+        s , r , l = [uc.cpu2millicores(x) for x in (s , r , l)] # Milicores
+        stat , request , limit = [string_c(x) for x in (s , r , l)] # String
+
+        return stat , request , limit
+
+    def max_parsed_m(df:pd.DataFrame) -> str|None:
+        # Usa max_test pero regresa los datos en Mi
+        def string_m(x):
+            f"{int(x)}Mi" if pd.notnull(x) else "N/A"
+        # Usa max_test pero regresa los datos en milicores
+        s , r , l = Metrics.max_test(df)
+        s , r , l = [uc.bytes2mi(x) for x in (s , r , l)] # Mi
+        stat , request , limit = [string_m(x) for x in (s , r , l)] # String
+
+        return stat , request , limit
 
 class Inventario:
     def __init__(self , project:str|Explorador):

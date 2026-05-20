@@ -255,6 +255,15 @@ class Deployment:
         self.available_replicas:int = raw.status.available_replicas or 0
 
     #------------- Acciones actuales -------------#
+    def scale(self , replicas:int):     
+        patch = {
+                "spec": {
+                    "replicas": replicas
+                }
+            }
+
+        self.patch_deployment(patch)
+
     def restart(self):   
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         patch = {
@@ -271,7 +280,7 @@ class Deployment:
 
         self.patch_deployment(patch_body=patch)
 
-    def wait_verification(self , timeout=300 , interval=5) -> None:
+    def wait_verification(self , timeout=300 , interval=5) -> bool:
         start = time()
         sleep(2)
 
@@ -309,6 +318,42 @@ class Deployment:
                 logger.error(f"Error verificando {self.name}: {e}")
                 return False
     
+    def wait_pods(self , timeout=300 , interval=5) -> bool:
+        start = time()
+
+        while True:
+            try:
+                if self.desired_replicas == 0:
+                    logger.info(f"{self.name}: no tiene replicas planeadas")
+                    return True
+
+                pods = self.get_pods()
+
+                if not pods:
+                    logger.info(f"{self.name}: esperando creación de pods...")
+                    pass
+
+                else:
+                    if any(pod.has_warnings(log=False) for pod in pods): # Pods have warnings
+                        pass
+
+                    elif any(pod.has_errors() for pod in pods): # Hay pods con errores
+                        return False
+                    
+                    elif all(not pod.has_warnings and pod.has_errors() 
+                             and pod.phase == "Running" for pod in pods):
+                        return True
+
+                if time() - start > timeout:
+                    logger.error(f"{self.name}: timeout esperando para operar")
+                    return False
+
+                sleep(interval)
+
+            except Exception as e:
+                logger.error(f"Error esperando pods {self.name}: {e}")
+                return False
+
     def patch_deployment(self , patch_body):
         try:
             Clients.apps_v1().patch_namespaced_deployment(
@@ -394,6 +439,18 @@ class Deployment:
         
         return n_healthy if n_healthy else None
     
+    def enough_mem(self) -> bool:  
+        for pod in self.get_pods():
+            statuses = pod._raw.status.container_statuses or []
+
+            for cs in statuses:
+                if cs.last_state and cs.last_state.terminated:
+                    if cs.last_state.terminated.reason == "OOMKilled":
+                        print(f"{pod.name}: OOMKilled detectado")
+                        return False
+                    
+        return True
+
     def health(self) -> list | None:
         if not self.is_healthy():
             return self.pods_health()
@@ -728,6 +785,36 @@ class Pod:
         if self.phase != "Running" or self.restart_count > 0:
             return False
         return True
+    
+    def has_errors(self) -> bool:
+        statuses = self._raw.status.container_statuses or []
+        for cs in statuses:
+            # CrashLoop / ImagePull
+            if cs.state.waiting:
+                reason = cs.state.waiting.reason
+                logger.warning(f"{self.name}: {reason}")
+
+                if reason in ["CrashLoopBackOff", "ErrImagePull", "ImagePullBackOff"]:
+                    return True
+
+            # OOMKilled
+            if cs.last_state and cs.last_state.terminated:
+                if cs.last_state.terminated.reason == "OOMKilled":
+                    logger.error(f"{self.name}: OOMKilled")
+                    return True
+    
+    def has_warnings(self , log=True) -> bool:
+        events = Clients.core_v1.list_namespaced_event(
+            namespace=self.namespace,
+            field_selector=f"involvedObject.name={self.name}"
+        )
+
+        for e in events.items:
+            if e.type == "Warning":
+                if log:logger.warning(f"{self.name}: {e.reason} - {e.message}")
+                return True
+        
+        return False
 
     def __repr__(self) -> str:
         return (

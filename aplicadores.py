@@ -1,11 +1,14 @@
 import pandas as pd , logging
 from elementos import Deployment
 from explorador import Explorador
+from analysis import Metrics
+from time import time
+from analysis import CPU_MIN_REQUEST , CPU_MIN_LIMIT
 
 logger = logging.getLogger(__name__)
 
-class Applicador_GCP:
-    def __init__(self , project:str|Explorador):
+class Limits_Requests:
+    def __init__(self , project:str|Explorador , suggestions:str|pd.DataFrame , backup:str|pd.DataFrame , apply=False):
         if isinstance(project, Explorador):
             self.explorer = project
 
@@ -16,19 +19,20 @@ class Applicador_GCP:
             raise TypeError(
                 "Analisys espera un project_id (str) o un Explorador"
             )
+        
+        self.suggestions:pd.DataFrame = Limits_Requests.ensure_df(suggestions)
+        self.backup:pd.DataFrame = Limits_Requests.ensure_df(backup)
+        self.apply = apply
 
-    def aplicador_lim_req(self , sheet:str|pd.DataFrame , apply=False):
+    def aplicador_lim_req(self):
         # Este aplicador esta estandarizado para el resultado de 
-        # analisis.Analisys.limits_requests_format() -> csv|df
-        if isinstance(sheet , str):
-            suggestions = pd.read_csv(sheet)
-            suggestions["Aprovado (T/F)"] = suggestions["Aprovado (T/F)"].astype(bool)
+        self.suggestions["Aprovado (T/F)"] = self.suggestions["Aprovado (T/F)"].astype(bool)
 
-        elif isinstance(sheet , pd.DataFrame):
-            suggestions = sheet
-
-        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-            row = suggestions.loc[suggestions.index == deployment.name]
+        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):    
+            row = self.suggestions.loc[
+                (self.suggestions["deployment"] == deployment.name) &
+                (self.suggestions["namespace"] == deployment.namespace)
+            ]
 
             if row.empty:
                 logger.warning(f"Deployment {deployment.name} no encontrado")
@@ -42,10 +46,21 @@ class Applicador_GCP:
 
             cpu_flag = row["nota_cpu"] != "Correcto"
             mem_flag = row["nota_memoria"] != "Correcto"
+            off_flag = not row["Habilitado"] # Se corrigio esta mayuscula en el analisis solo funcionara con mayuscula en recomendaciones generadas anteriormente
+            cpu = mem = [None , None]
 
-            cpu = mem = None
-            if cpu_flag or mem_flag:
-                cpu, mem = self.test_deployment(
+            if cpu_flag and not mem_flag: # CPU datos insuficientes and MEM correcto = CPU min
+                cpu = [CPU_MIN_REQUEST , CPU_MIN_LIMIT]
+
+            elif off_flag and (cpu_flag or mem_flag): # El deployment no esta encendido
+                cpu, mem = self.stst_deployment(
+                    deployment=deployment,
+                    c_flag=cpu_flag,
+                    m_flag=mem_flag
+                )
+
+            elif not off_flag and (cpu_flag or mem_flag): # El deployment esta encendido pero faltan datos
+                cpu, mem = self.rat_deployment(
                     deployment=deployment,
                     c_flag=cpu_flag,
                     m_flag=mem_flag
@@ -78,27 +93,139 @@ class Applicador_GCP:
                 }
             }
 
-            if apply:
+            if self.apply:
                 deployment.patch_deployment(patch_body=patch)
                 self.security_check(deployment=deployment)
 
-    def roll_back(self , sheet:str|pd.DataFrame):
+    def stst_deployment(self , deployment:Deployment , c_flag:bool , m_flag:bool):
+        # Start Then Shutdown Test
+        cpu = mem = [None , None]
+        start = int(time())
+        deployment.scale(1)
+        if deployment.wait_verification():
+            if c_flag:
+                _ , *cpu = deployment.get_cpu_hist(days=0 ,
+                                                seconds=int(time()-start),
+                                                fn=Metrics.max_parsed_c
+                                                )
+            if m_flag:
+                _ , *mem = deployment.get_memory_hist(days=0 ,
+                                                seconds=int(time()-start),
+                                                fn=Metrics.max_parsed_m
+                                                )
+        else:
+            logger.warning(f"{deployment.name} tuvo un error al inicar los pods")
+
+        deployment.scale(0)
+        logger.warning(f"{deployment.name} se regreso a 0 replicas")
+        return cpu , mem
+
+    def rat_deployment(self , deployment:Deployment , c_flag:bool , m_flag:bool):
+        # Restart And Test
+        cpu = mem = [None , None]
+        # Tomar el maximo entre el reinicio y el punto estable
+        # Los regresa para asignarlos con un 15% más en formato necesario
+        self._set_top(deployment) # Asignar limites altos para que no crashee
+        start = int(time())
+        deployment.restart() # Reiniciar el deployment 
+        if deployment.wait_verification(): # Esperar a que se obtengan la salud de los pods
+            if c_flag:
+                _ , *cpu = deployment.get_cpu_hist(days=0 ,
+                                                seconds=int(time()-start),
+                                                fn=Metrics.max_parsed_c
+                                                )
+            if m_flag:
+                _ , *mem = deployment.get_memory_hist(days=0 ,
+                                                seconds=int(time()-start),
+                                                fn=Metrics.max_parsed_m
+                                                )
+        else:
+            logger.warning(f"{deployment.name} tuvo un error al inicar los pods")
+
+        return cpu , mem
+    
+    def security_check(self , deployment:Deployment , attempts=3 , step=20):
+        # Una revision de seguridad donde se cicla un aumento de recursos en caso 
+        # de tener un error relacionado con recursos insuficientes
+        for attempt in range(attempts):
+            if deployment.wait_verification():
+                logger.info(f"{deployment.name} esta corriendo")
+
+            elif not deployment.enough_mem():
+                logger.info(f"{deployment.name} no es suficiente memoria, aumentando {step}%")
+
+    def _set_top(deployment:Deployment):
+        patch = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [{
+                                "name": deployment.name,
+                                "resources": {
+                                    "requests": {
+                                        "cpu": "50m",
+                                        "memory": "64Mi"
+                                    },
+                                    "limits": {
+                                        "cpu": "2",
+                                        "memory": "4Gi"
+                                    }
+                                }
+                            }]
+                        }
+                    }
+                }
+            }
+        
+        deployment.patch_deployment(patch_body=patch)
+    
+    def roll_back(self , deployment:Deployment):
+        row = self.backup.loc[self.backup["deployment"] == deployment.name]
+
+        row = row.iloc[0]
+        
+        memory_request = row["mem_request"].iloc[0]
+        memory_limit = row["mem_limit"].iloc[0]
+        cpu_request = row["cpu_request"].iloc[0]
+        cpu_limit = row["cpu_limit"].iloc[0]
+
+        patch = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": deployment.name,
+                                    "resources": {
+                                        "requests": {
+                                            "cpu": cpu_request,
+                                            "memory": memory_request
+                                        },
+                                        "limits": {
+                                            "cpu": cpu_limit,
+                                            "memory": memory_limit
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        
+        print(deployment.name , patch)
+
+        deployment.patch_deployment(patch_body=patch)
+    
+    def full_roll_back(self):
         # Falta lidiar con los N/A o NaN
-        if isinstance(sheet , str):
-            suggestions = pd.read_csv(sheet)
-            suggestions["Aprovado (T/F)"] = suggestions["Aprovado (T/F)"].astype(bool)
-
-        elif isinstance(sheet , pd.DataFrame):
-            suggestions = sheet
-
         for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
-            row = suggestions.loc[suggestions.index == deployment.name]
+            row = self.backup.loc[self.backup["deployment"] == deployment.name]
             if row.empty:
-                raise ValueError("Deployment no encontrado")
-            
-            if not row["Aprovado (T/F)"].iloc[0]:
-                print("Deployment no abrobado")
+                logger.warning(f"Deployment {deployment.name} no encontrado")
                 continue
+
+            row = row.iloc[0]
             
             memory_request = row["mem_request"].iloc[0]
             memory_limit = row["mem_limit"].iloc[0]
@@ -130,64 +257,26 @@ class Applicador_GCP:
                 }
             
             print(deployment.name , patch)
-            break
 
-            #deployment.patch_deployment(patch_body=patch)
+            deployment.patch_deployment(patch_body=patch)
 
-    def test_deployment(self , deployment:Deployment , c_flag:bool , m_flag:bool):
-        # Tomar el maximo entre el reinicio y el punto estable
-        # Los regresa para asignarlos con un 15% más en formato necesario
-        self._set_top(deployment) # Asignar limites altos para que no crashee
-        deployment.restart() # Reiniciar el deployment 
-
-        if deployment.wait_verification(): # Esperar a que se obtengan la salud de los pods
-            deployment.get_cpu_hist_a(days=0)
-
-        else:
-            logger.warning(f"Problea con los pods de {deployment.name}")
-    
-    def security_check(self , deployment:Deployment , attempts:int , step:int):
-        # Una revision de seguridad donde se cicla un aumento de recursos en caso 
-        # de tener un error relacionado con recursos insuficientes
-        pass
-
-    def _set_top(deployment:Deployment):
-        patch = {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [{
-                                "name": deployment.name,
-                                "resources": {
-                                    "requests": {
-                                        "cpu": "50m",
-                                        "memory": "64Mi"
-                                    },
-                                    "limits": {
-                                        "cpu": "2",
-                                        "memory": "4Gi"
-                                    }
-                                }
-                            }]
-                        }
-                    }
-                }
-            }
+    def ensure_df(df:str|pd.DataFrame):
+        # analisis.Analisys.limits_requests_format() -> csv|df
+        if isinstance(df , str):
+            return pd.read_csv(df)
         
-        deployment.patch_deployment(patch_body=patch)
- 
+        elif isinstance(df , pd.DataFrame):
+            return df
+        
+        else:
+            raise TypeError(
+                "Se espera un DataFrame de pandas o ruta de csv"
+            )
+        
 # if __name__ == "__main__":
-    # from analysis import Analisys
-#     project_ids = [
-#         "cpl-ssff-cnsulcc-dev-05122025",
-#     ]
-
-#     for project_id in project_ids:
-#         explorador = Explorador(project_id=project_id)
-#         analisis = Analisys(explorador)
-#         recomendaciones = analisis.limits_requests_format(days=1 , rate="1m" , csv=False)
-#         recomendaciones.loc[recomendaciones.index[0], 'Aprovado (T/F)'] = True
-#         #print(recomendaciones)
-#         aplicador = Applicador_GCP(explorador)
-#         aplicador.aplicador_lim_req(recomendaciones)
-
+#     aplicador = Limits_Requests(project="cpl-corp-presyab-dev-30052024",
+#                                 suggestions="cpl-corp-presyab-dev-30052024_2026-05-07_suggestions.csv",
+#                                 backup="cpl-corp-presyab-dev-30052024_2026-05-07_back_up.csv",
+#                                 apply=False)
+    
+#     aplicador.aplicador_lim_req()
