@@ -367,3 +367,60 @@ class Inventario:
             )
         
         self.file_n_template = f"{self.explorer.project.id}_{date.today()}_"
+
+    def inventario_simple(self):
+        inventario = self.get_deployments(fn=self.get_deployment_binfo)
+        logger.info(f"Obteniendo inventario de {self.explorer.project.name}")
+    
+    def get_deployments(self , fn=None) -> pd.DataFrame:
+        if fn is None:
+            raise ValueError("La funcion para definir que sale por deployment no esta declarada")
+        
+        dfs = []
+        for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
+            dfs.append(fn(deployment))
+        
+        df = pd.concat(dfs).sort_index()
+
+        return df  
+    
+    def get_deployment_binfo(self , deployment:Deployment) -> pd.DataFrame:
+        try:
+            dep = pd.DataFrame({
+                "namespace" : deployment.namespace,
+                "container" : deployment.container,
+                "replicas": deployment.replicas,
+                "desired_replicas" : deployment.desired_replicas,
+                "HPA" : deployment.has_hpa()
+                },index=[deployment.name]
+            )
+                
+            dep.index.name = "deployment"
+            logger.info(f"Info de {deployment.name} fueron generadas")
+            return dep
+        
+        except Exception as e:
+            logger.error(f"Error al obtener info de {deployment.name}")
+            raise
+
+class Concentrado: 
+    def __init__(self , proyectos:pd.DataFrame|str):
+        # La tabla necesita un minimo de project_id y torre
+        if isinstance(proyectos, pd.DataFrame):
+            self.tabla = proyectos
+
+        elif isinstance(proyectos, str):
+            tabla = pd.read_csv(proyectos)
+
+        else:
+            raise TypeError(
+                "Concentrado espera un dataframe o una ruta a csv"
+            )
+        
+        self.file_n_template = f"{self.explorer.project.id}_{date.today()}_"
+
+    def concentrado_torres():
+        pass
+
+    def inventario_proyectos():
+        pass

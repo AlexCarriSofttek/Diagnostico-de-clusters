@@ -59,6 +59,7 @@ class UnitsCon:
 class Clients:
     _core_v1 = None
     _apps_v1 = None
+    _autoscaling_v1 = None
     _monitoring = None
 
     @classmethod
@@ -66,6 +67,12 @@ class Clients:
         if cls._core_v1 is None:
             cls._core_v1 = client.CoreV1Api()
         return cls._core_v1
+
+    @classmethod
+    def autoscaling(cls):
+        if cls._autoscaling_v1 is None:
+            cls._autoscaling_v1 = client.AutoscalingV1Api()
+        return cls._autoscaling_v1
 
     @classmethod
     def apps_v1(cls):
@@ -253,6 +260,8 @@ class Deployment:
         self.desired_replicas:int = raw.spec.replicas or 0
         self.ready_replicas:int = raw.status.ready_replicas or 0
         self.available_replicas:int = raw.status.available_replicas or 0
+
+        self.container:str = raw.spec.template.spec.containers[0].name
 
     #------------- Acciones actuales -------------#
     def scale(self , replicas:int):     
@@ -454,6 +463,21 @@ class Deployment:
     def health(self) -> list | None:
         if not self.is_healthy():
             return self.pods_health()
+    
+    def has_hpa(self) -> bool:
+        autoscaling = Clients.autoscaling()
+
+        hpas = autoscaling.list_namespaced_horizontal_pod_autoscaler(
+            namespace=self.namespace
+        )
+
+        for hpa in hpas.items:
+            target = hpa.spec.scale_target_ref
+            if target.name == self.name and target.kind == "Deployment":
+                return True
+
+        return False
+
     #------------- Funciones en base a Query y MQL-------------#
     def get_memory_hist(self , days:int , rate="1m" , fn=None):
         metric = "kubernetes.io/container/memory/used_bytes"

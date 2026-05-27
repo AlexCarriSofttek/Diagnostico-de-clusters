@@ -1,24 +1,56 @@
 # Este script es el punto principal de la herramienta
-# Cada funcion funge como ejemplo GENERAL de lo que puede  
-# hacer con la herramienta
-from pandas import DataFrame
-from explorador import Explorador
-from analysis import Metrics
+from analysis import Metrics , Inventario
+import argparse
 # Pendientes
-# - Cambio de nombre de log con base al run
 # - Documentacion 
-# - Funciones en el aplicador para corregir si el deployment no tiene suficientes recursos
-# - Funcion para quitar limites, reiniciar el deployment, y medir el arranque de CPU y Memoria
 
 # Inventarios 
 # - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
+def get_args():
+    parser = argparse.ArgumentParser(
+        description="Analiza proyectos",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="" # Pendiente
+    )
 
-# Comparar los numeros de rogelio con los de la herramienta. 
+    parser.add_argument(
+        "-m", "--modo",
+        default="inventario",
+        help="Que se va a hacer si inventario o sugerencias"
+    )
+
+    parser.add_argument(
+        "--project-id",
+        default=None,
+        help="GCP Project ID (auto-detecta si no se especifica)"
+    )
+
+    parser.add_argument(
+        "--cluster-name",
+        help="GKE Cluster name (auto-detecta si no se especifica)"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        default="gke_resource_analysis.csv",
+        help="Archivo de salida CSV (default: gke_resource_analysis.csv)"
+    )
+
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    project_id = "cpl-ec-gcobranza-dev-08082024"
+    arg = get_args()
 
-    a = Metrics(project=project_id)
-    recomendaciones = a.limits_requests_format(days=1 , rate="1m")
+    if arg.project_id is None:
+        raise ValueError("El proyecto esta vacío")
+    
+    project_id = arg.project_id
+
+    if arg.mode == "inventario":
+        inventario = Inventario(project_id)
+    
+    elif arg.mode == "sugerencias":
+        metricas = Metrics(project_id)
+        recomendaciones = metricas.limits_requests_format(days=1 , rate="1m")
 
         
