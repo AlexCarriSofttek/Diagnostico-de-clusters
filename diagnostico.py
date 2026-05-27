@@ -1,20 +1,56 @@
 # Este script es el punto principal de la herramienta
-# Sin embargo considere que se esta segmentando los puntos 
-# de la herramienta con base a su funcion 
+from analysis import Metrics , Inventario
+import argparse
+# Pendientes
+# - Documentacion 
 
-import sys
-import os
+# Inventarios 
+# - Todo lo relacionado con el aplicativo menos informacion sensible (No secretos)
+def get_args():
+    parser = argparse.ArgumentParser(
+        description="Analiza proyectos",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="" # Pendiente
+    )
 
-# Fix encoding for Windows
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    parser.add_argument(
+        "-m", "--modo",
+        default="inventario",
+        help="Que se va a hacer si inventario o sugerencias"
+    )
 
-try:
-    from google.cloud import monitoring_v3
-    from google.protobuf.timestamp_pb2 import Timestamp
-    HAS_MONITORING = True
-except ImportError:
-    HAS_MONITORING = False
-    print("⚠️  google-cloud-monitoring no instalado. Instala con: pip install google-cloud-monitoring")
+    parser.add_argument(
+        "--project-id",
+        default=None,
+        help="GCP Project ID (auto-detecta si no se especifica)"
+    )
 
+    parser.add_argument(
+        "--cluster-name",
+        help="GKE Cluster name (auto-detecta si no se especifica)"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        default="gke_resource_analysis.csv",
+        help="Archivo de salida CSV (default: gke_resource_analysis.csv)"
+    )
+
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    arg = get_args()
+
+    if arg.project_id is None:
+        raise ValueError("El proyecto esta vacío")
+    
+    project_id = arg.project_id
+
+    if arg.mode == "inventario":
+        inventario = Inventario(project_id)
+    
+    elif arg.mode == "sugerencias":
+        metricas = Metrics(project_id)
+        recomendaciones = metricas.limits_requests_format(days=1 , rate="1m")
+
+        
