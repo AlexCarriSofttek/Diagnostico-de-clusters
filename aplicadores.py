@@ -44,27 +44,21 @@ class Limits_Requests:
                 logger.info(f"Deployment {deployment.name} no aprovado")
                 continue
 
-            cpu_flag = row["nota_cpu"] != "Correcto"
-            mem_flag = row["nota_memoria"] != "Correcto"
-            off_flag = not row["Habilitado"] # Se corrigio esta mayuscula en el analisis solo funcionara con mayuscula en recomendaciones generadas anteriormente
+            aproved = ["Correcto" , "Forced"]
+
+            cpu_flag =not row["nota_cpu"] in aproved
+            mem_flag =not row["nota_memoria"] in aproved
             cpu = mem = [None , None]
 
             if cpu_flag and not mem_flag: # CPU datos insuficientes and MEM correcto = CPU min
-                cpu = [CPU_MIN_REQUEST , CPU_MIN_LIMIT]
-
-            elif off_flag and (cpu_flag or mem_flag): # El deployment no esta encendido
-                cpu, mem = self.stst_deployment(
-                    deployment=deployment,
-                    c_flag=cpu_flag,
-                    m_flag=mem_flag
-                )
-
-            elif not off_flag and (cpu_flag or mem_flag): # El deployment esta encendido pero faltan datos
-                cpu, mem = self.rat_deployment(
-                    deployment=deployment,
-                    c_flag=cpu_flag,
-                    m_flag=mem_flag
-                )
+                cpu = ["100m" , "300m"]
+            
+            elif not cpu_flag and not mem_flag:
+                pass
+            
+            else:
+                logger.warning(f"{deployment.name} tiene problemas")
+                continue
 
             cpu_request = cpu[0] if cpu_flag else row["recommended_cpu_request"]
             cpu_limit   = cpu[1] if cpu_flag else row["recommended_cpu_limit"]
@@ -95,91 +89,8 @@ class Limits_Requests:
 
             if self.apply:
                 deployment.patch_deployment(patch_body=patch)
-                self.security_check(deployment=deployment)
-
-    def stst_deployment(self , deployment:Deployment , c_flag:bool , m_flag:bool):
-        # Start Then Shutdown Test
-        cpu = mem = [None , None]
-        start = int(time())
-        deployment.scale(1)
-        if deployment.wait_verification():
-            if c_flag:
-                _ , *cpu = deployment.get_cpu_hist(days=0 ,
-                                                seconds=int(time()-start),
-                                                fn=Metrics.max_parsed_c
-                                                )
-            if m_flag:
-                _ , *mem = deployment.get_memory_hist(days=0 ,
-                                                seconds=int(time()-start),
-                                                fn=Metrics.max_parsed_m
-                                                )
-        else:
-            logger.warning(f"{deployment.name} tuvo un error al inicar los pods")
-
-        deployment.scale(0)
-        logger.warning(f"{deployment.name} se regreso a 0 replicas")
-        return cpu , mem
-
-    def rat_deployment(self , deployment:Deployment , c_flag:bool , m_flag:bool):
-        # Restart And Test
-        cpu = mem = [None , None]
-        # Tomar el maximo entre el reinicio y el punto estable
-        # Los regresa para asignarlos con un 15% más en formato necesario
-        self._set_top(deployment) # Asignar limites altos para que no crashee
-        start = int(time())
-        deployment.restart() # Reiniciar el deployment 
-        if deployment.wait_verification(): # Esperar a que se obtengan la salud de los pods
-            if c_flag:
-                _ , *cpu = deployment.get_cpu_hist(days=0 ,
-                                                seconds=int(time()-start),
-                                                fn=Metrics.max_parsed_c
-                                                )
-            if m_flag:
-                _ , *mem = deployment.get_memory_hist(days=0 ,
-                                                seconds=int(time()-start),
-                                                fn=Metrics.max_parsed_m
-                                                )
-        else:
-            logger.warning(f"{deployment.name} tuvo un error al inicar los pods")
-
-        return cpu , mem
     
-    def security_check(self , deployment:Deployment , attempts=3 , step=20):
-        # Una revision de seguridad donde se cicla un aumento de recursos en caso 
-        # de tener un error relacionado con recursos insuficientes
-        for attempt in range(attempts):
-            if deployment.wait_verification():
-                logger.info(f"{deployment.name} esta corriendo")
-
-            elif not deployment.enough_mem():
-                logger.info(f"{deployment.name} no es suficiente memoria, aumentando {step}%")
-
-    def _set_top(deployment:Deployment):
-        patch = {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [{
-                                "name": deployment.name,
-                                "resources": {
-                                    "requests": {
-                                        "cpu": "50m",
-                                        "memory": "64Mi"
-                                    },
-                                    "limits": {
-                                        "cpu": "2",
-                                        "memory": "4Gi"
-                                    }
-                                }
-                            }]
-                        }
-                    }
-                }
-            }
-        
-        deployment.patch_deployment(patch_body=patch)
-    
-    def roll_back(self , deployment:Deployment):
+    def roll_back(self , deployment:Deployment): # Aun no sirve 
         row = self.backup.loc[self.backup["deployment"] == deployment.name]
 
         row = row.iloc[0]
@@ -217,7 +128,7 @@ class Limits_Requests:
 
         deployment.patch_deployment(patch_body=patch)
     
-    def full_roll_back(self):
+    def full_roll_back(self): # Aun no sirve 
         # Falta lidiar con los N/A o NaN
         for deployment in self.explorer.iter_deployments_filter(["kube" , "gmp" , "gke" , "default"]):
             row = self.backup.loc[self.backup["deployment"] == deployment.name]
