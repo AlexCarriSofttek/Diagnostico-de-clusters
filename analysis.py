@@ -91,6 +91,7 @@ class Metrics:
         df_resources = pd.DataFrame([
             {   
                 "deployment": r.deployment,
+                "namespace": r.namespace,
                 "container": r.container,            
                 "cpu_request": (
                     r.requests.get("cpu")
@@ -424,3 +425,7 @@ class Concentrado:
 
     def inventario_proyectos():
         pass
+
+if __name__ == "__main__":
+    project_id = "cpl-corp-presyab-qa-19032025"
+    m = Metrics(project=project_id).download_current()

@@ -378,6 +378,7 @@ class Deployment:
         @dataclass(frozen=True)
         class CurrentResources:
             deployment: str
+            namespace: str
             container: str
             limits: dict
             requests: dict
@@ -386,6 +387,7 @@ class Deployment:
             resources = container.resources
             yield CurrentResources(
                 self.name,
+                self.namespace,
                 container.name,
                 resources.limits,
                 resources.requests,
