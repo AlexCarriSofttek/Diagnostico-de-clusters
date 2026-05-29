@@ -118,6 +118,9 @@ class Metrics:
         ]).set_index("deployment")
 
         return df_resources
+    
+    def download_current(self):
+        self.get_current_resources().to_csv(f"{self.file_n_template}current.csv")
 
     #------------- Recomendaciones de recursos -------------#
     def limits_requests_format(self , days=1 , rate="1m" , min_cpu=True , min_mem=True):
